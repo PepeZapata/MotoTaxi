@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
     zip \
     unzip \
     git \
-    && docker-php-ext-install pdo pdo_pgsql zip
+    && docker-php-ext-install pdo pdo_pgsql zip pcntl
 
 # Habilitar mod_rewrite para Apache (indispensable para las rutas de Laravel)
 RUN a2enmod rewrite

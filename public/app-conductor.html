@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mototaxi - Conductor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pusher/8.4.0/pusher.min.js"></script>
+<style>
+  :root {
+    --primary: #16a34a;
+    --primary-dark: #15803d;
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --text: #0f172a;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --danger: #dc2626;
+    --warn: #d97706;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    min-height: 100vh;
+  }
+  .app { max-width: 480px; margin: 0 auto; padding: 24px 16px 60px; }
+  header { text-align: center; margin-bottom: 20px; }
+  header h1 { font-size: 22px; margin: 0; }
+  header p { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .card h2 { font-size: 16px; margin: 0 0 14px; }
+
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+  }
+  input:focus { outline: none; border-color: var(--primary); }
+
+  button {
+    width: 100%;
+    padding: 11px;
+    border: none;
+    border-radius: 8px;
+    background: var(--primary);
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 10px;
+  }
+  button:hover { background: var(--primary-dark); }
+  button.secondary { background: transparent; color: var(--primary); border: 1px solid var(--primary); }
+  button.secondary:hover { background: #f0fdf4; }
+  button.danger { background: var(--danger); }
+  button.danger:hover { background: #b91c1c; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .error { color: var(--danger); font-size: 13px; margin-top: 8px; }
+  .hidden { display: none !important; }
+
+  .userbar { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+  .userbar button { width: auto; margin: 0; padding: 6px 12px; font-size: 12px; }
+
+  .toggle-row { display: flex; justify-content: space-between; align-items: center; }
+  .toggle-row .label { font-size: 14px; font-weight: 600; }
+  .pill { font-size: 12px; padding: 4px 10px; border-radius: 999px; font-weight: 600; }
+  .pill-off { background: #fee2e2; color: #991b1b; }
+  .pill-on { background: #dcfce7; color: #166534; }
+
+  .request-item {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-top: 10px;
+  }
+  .request-item p { margin: 2px 0; font-size: 13px; }
+  .request-item .addr { font-weight: 600; font-size: 14px; }
+  .request-item button { margin-top: 8px; }
+  .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 20px 0; }
+
+  .trip-step {
+    display: block; margin-top: 8px;
+  }
+  .status-badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: #dbeafe; color: #1e40af; }
+
+  #log { font-family: monospace; font-size: 11px; color: #94a3b8; background: #0f172a; padding: 8px; border-radius: 6px; max-height: 90px; overflow-y: auto; margin-top: 10px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>🏍️ Mototaxi</h1>
+    <p>App del conductor</p>
+  </header>
+
+  <!-- ===================== LOGIN ===================== -->
+  <div id="loginView" class="card">
+    <h2>Iniciar sesión</h2>
+    <label>Correo</label>
+    <input id="loginEmail" type="email" value="conductor1@mototaxi.test">
+    <label>Contraseña</label>
+    <input id="loginPassword" type="password" value="password">
+    <button onclick="login()">Entrar</button>
+    <div id="loginError" class="error hidden"></div>
+  </div>
+
+  <!-- ===================== APP (logueado) ===================== -->
+  <div id="appView" class="hidden">
+    <div class="userbar">
+      <span id="userGreeting"></span>
+      <button class="secondary" onclick="logout()">Cerrar sesión</button>
+    </div>
+
+    <!-- Disponibilidad -->
+    <div class="card">
+      <div class="toggle-row">
+        <span class="label">Estado</span>
+        <span id="availabilityPill" class="pill pill-off">Desconectado</span>
+      </div>
+      <button id="toggleBtn" onclick="toggleAvailability()">Conectarme y recibir viajes</button>
+      <p class="hint" id="locationHint">Necesitamos tu ubicación para mostrarte viajes cercanos.</p>
+    </div>
+
+    <!-- Solicitudes cercanas -->
+    <div id="requestsView" class="card hidden">
+      <h2>Solicitudes cercanas</h2>
+      <div id="requestsList"></div>
+      <p id="requestsEmpty" class="empty hidden">Ninguna solicitud cercana por ahora. Te avisamos en cuanto llegue una.</p>
+    </div>
+
+    <!-- Viaje activo -->
+    <div id="tripView" class="card hidden">
+      <h2>Viaje en curso <span id="tripBadge" class="status-badge"></span></h2>
+      <p id="tripInfo"></p>
+      <div id="tripActions"></div>
+    </div>
+
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+  // ---------- Config ----------
+  const API_BASE = window.location.origin + '/api';
+  const REVERB_APP_KEY = 'uj2v4cwquzmd5nuvxz2u'; // debe coincidir con REVERB_APP_KEY de tu .env
+  const REVERB_HOST = 'localhost';
+  const REVERB_PORT = 8080;
+  const LOCATION_REFRESH_MS = 15000; // cada cuánto reportamos ubicación mientras está disponible
+
+  // ---------- Estado ----------
+  let token = localStorage.getItem('mototaxi_driver_token') || null;
+  let user = JSON.parse(localStorage.getItem('mototaxi_driver_user') || 'null');
+  let pusher = null;
+  let subscribedChannels = []; // nombres completos, ej: "drivers.zone.d58r3"
+  let openRequests = {}; // id -> request, para no duplicar en la lista
+  let currentTrip = null; // { id (service_request_id), assignmentId, status }
+  let locationInterval = null;
+  let lastLat = null, lastLng = null;
+
+  // ---------- Helpers ----------
+  async function api(path, options = {}) {
+    const res = await fetch(API_BASE + path, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(token ? { Authorization: 'Bearer ' + token } : {}),
+        ...(options.headers || {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = data.message || (data.errors ? Object.values(data.errors).flat().join(' ') : 'Error desconocido');
+      throw new Error(msg);
+    }
+    return data;
+  }
+
+  function show(id) { document.getElementById(id).classList.remove('hidden'); }
+  function hide(id) { document.getElementById(id).classList.add('hidden'); }
+
+  function log(msg) {
+    const el = document.getElementById('log');
+    const time = new Date().toLocaleTimeString();
+    el.textContent += `[${time}] ${msg}\n`;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function getLocation() {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) return reject(new Error('Sin geolocalización'));
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        (err) => reject(err)
+      );
+    });
+  }
+
+  // ---------- Login ----------
+  async function login() {
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    hide('loginError');
+    try {
+      const data = await api('/auth/login', { method: 'POST', body: { email, password } });
+      token = data.token;
+      user = data.user;
+      localStorage.setItem('mototaxi_driver_token', token);
+      localStorage.setItem('mototaxi_driver_user', JSON.stringify(user));
+      boot();
+    } catch (e) {
+      const el = document.getElementById('loginError');
+      el.textContent = e.message;
+      show('loginError');
+    }
+  }
+
+  function logout() {
+    stopEverything();
+    localStorage.removeItem('mototaxi_driver_token');
+    localStorage.removeItem('mototaxi_driver_user');
+    token = null; user = null;
+    hide('appView');
+    show('loginView');
+  }
+
+  function stopEverything() {
+    if (locationInterval) clearInterval(locationInterval);
+    if (pusher) { pusher.disconnect(); pusher = null; }
+    subscribedChannels = [];
+  }
+
+  // ---------- Disponibilidad ----------
+  async function toggleAvailability() {
+    const pill = document.getElementById('availabilityPill');
+    const isOnline = pill.textContent === 'Disponible';
+
+    if (isOnline) {
+      // Pasar a offline
+      await api('/driver/availability', { method: 'POST', body: { availability_status: 'offline' } });
+      pill.textContent = 'Desconectado';
+      pill.className = 'pill pill-off';
+      document.getElementById('toggleBtn').textContent = 'Conectarme y recibir viajes';
+      stopEverything();
+      hide('requestsView');
+      log('Te desconectaste. Ya no recibirás solicitudes nuevas.');
+      return;
+    }
+
+    // Pasar a online: primero necesitamos ubicación
+    document.getElementById('toggleBtn').disabled = true;
+    try {
+      const { lat, lng } = await getLocation();
+      lastLat = lat; lastLng = lng;
+
+      await api('/driver/location', { method: 'POST', body: { latitude: lat, longitude: lng } });
+      await api('/driver/availability', { method: 'POST', body: { availability_status: 'available' } });
+
+      pill.textContent = 'Disponible';
+      pill.className = 'pill pill-on';
+      document.getElementById('toggleBtn').textContent = 'Desconectarme';
+      document.getElementById('locationHint').textContent = `Ubicación reportada: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+      show('requestsView');
+      await refreshZoneAndSubscribe(lat, lng);
+      await loadNearbyRequests(lat, lng);
+
+      locationInterval = setInterval(async () => {
+        try {
+          const pos = await getLocation();
+          lastLat = pos.lat; lastLng = pos.lng;
+          await api('/driver/location', { method: 'POST', body: { latitude: pos.lat, longitude: pos.lng } });
+          await refreshZoneAndSubscribe(pos.lat, pos.lng);
+        } catch (e) {
+          log('No se pudo actualizar ubicación: ' + e.message);
+        }
+      }, LOCATION_REFRESH_MS);
+    } catch (e) {
+      alert('No se pudo obtener tu ubicación: ' + e.message);
+    } finally {
+      document.getElementById('toggleBtn').disabled = false;
+    }
+  }
+
+  // ---------- Zona geohash + suscripción en tiempo real ----------
+  async function refreshZoneAndSubscribe(lat, lng) {
+    const zone = await api(`/geo/zone?lat=${lat}&lng=${lng}`);
+    const newChannels = zone.channels; // ej: ["drivers.zone.d58r3", ...]
+
+    if (!pusher) {
+      pusher = new Pusher(REVERB_APP_KEY, {
+        cluster: 'mt1',
+        wsHost: REVERB_HOST,
+        wsPort: REVERB_PORT,
+        wssPort: REVERB_PORT,
+        forceTLS: false,
+        enabledTransports: ['ws'],
+        disableStats: true,
+        authEndpoint: window.location.origin + '/broadcasting/auth',
+        auth: { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' } },
+      });
+      pusher.connection.bind('connected', () => log('Conectado al servidor en tiempo real.'));
+    }
+
+    // Desuscribir canales que ya no aplican (nos movimos de zona)
+    subscribedChannels
+      .filter((c) => !newChannels.includes(c))
+      .forEach((c) => {
+        pusher.unsubscribe('private-' + c);
+      });
+
+    // Suscribir canales nuevos que todavía no tenemos
+    newChannels
+      .filter((c) => !subscribedChannels.includes(c))
+      .forEach((c) => {
+        const channel = pusher.subscribe('private-' + c);
+        channel.bind('service-request.created', (data) => {
+          log(`Nueva solicitud cercana recibida (#${data.id})`);
+          addRequestToList(data);
+        });
+      });
+
+    if (subscribedChannels.length && JSON.stringify(subscribedChannels.sort()) !== JSON.stringify([...newChannels].sort())) {
+      log(`Cambiaste de zona. Ahora escuchando ${newChannels.length} celdas cercanas.`);
+    }
+
+    subscribedChannels = newChannels;
+  }
+
+  // ---------- Solicitudes cercanas ----------
+  async function loadNearbyRequests(lat, lng) {
+    const list = await api(`/service-requests/open?lat=${lat}&lng=${lng}`);
+    openRequests = {};
+    list.forEach((r) => { openRequests[r.id] = r; });
+    renderRequests();
+  }
+
+  function addRequestToList(data) {
+    if (currentTrip) return; // si ya tiene un viaje activo, no lo saturamos con más solicitudes
+    openRequests[data.id] = data;
+    renderRequests();
+  }
+
+  function renderRequests() {
+    const container = document.getElementById('requestsList');
+    const ids = Object.keys(openRequests);
+
+    if (!ids.length) {
+      container.innerHTML = '';
+      show('requestsEmpty');
+      return;
+    }
+    hide('requestsEmpty');
+
+    container.innerHTML = ids.map((id) => {
+      const r = openRequests[id];
+      return `
+        <div class="request-item">
+          <p class="addr">${r.origin_address || 'Origen sin dirección (' + r.origin_lat + ', ' + r.origin_lng + ')'}</p>
+          <p>→ ${r.destination_address || 'Destino (' + r.destination_lat + ', ' + r.destination_lng + ')'}</p>
+          ${r.estimated_cost ? `<p>Estimado: $${r.estimated_cost}</p>` : ''}
+          <button onclick="acceptRequest(${r.id})">Aceptar viaje</button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function acceptRequest(id) {
+    try {
+      const assignment = await api(`/service-requests/${id}/accept`, { method: 'POST' });
+      currentTrip = { id: assignment.service_request_id, assignmentId: assignment.id, status: assignment.acceptance_status };
+      openRequests = {};
+      hide('requestsView');
+      renderTrip();
+    } catch (e) {
+      alert('No se pudo aceptar: ' + e.message + '\n(probablemente otro conductor la tomó primero)');
+      // refrescamos la lista por si esa solicitud ya no está disponible
+      if (lastLat) loadNearbyRequests(lastLat, lastLng);
+    }
+  }
+
+  // ---------- Viaje activo: avanzar estados ----------
+  const NEXT_STATUS = {
+    accepted: { next: 'en_route_to_pickup', label: 'Voy en camino' },
+    en_route_to_pickup: { next: 'arrived', label: 'Llegué al punto de recogida' },
+    arrived: { next: 'started', label: 'Iniciar viaje' },
+    started: { next: 'finished', label: 'Finalizar viaje' },
+  };
+
+  function renderTrip() {
+    show('tripView');
+    document.getElementById('tripBadge').textContent = currentTrip.status;
+    document.getElementById('tripInfo').textContent = `Solicitud #${currentTrip.id}`;
+
+    const step = NEXT_STATUS[currentTrip.status];
+    const actions = document.getElementById('tripActions');
+
+    if (!step) {
+      actions.innerHTML = '<p>Viaje finalizado. ¡Buen trabajo!</p>';
+      setTimeout(() => {
+        currentTrip = null;
+        hide('tripView');
+        show('requestsView');
+        if (lastLat) loadNearbyRequests(lastLat, lastLng);
+      }, 2000);
+      return;
+    }
+
+    actions.innerHTML = `<button onclick="advanceTrip()">${step.label}</button>`;
+  }
+
+  async function advanceTrip() {
+    const step = NEXT_STATUS[currentTrip.status];
+    if (!step) return;
+
+    try {
+      await api(`/trip-assignments/${currentTrip.assignmentId}/status`, {
+        method: 'PATCH',
+        body: { acceptance_status: step.next },
+      });
+      currentTrip.status = step.next;
+      renderTrip();
+    } catch (e) {
+      alert('Error al actualizar el viaje: ' + e.message);
+    }
+  }
+
+  // ---------- Arranque ----------
+  function boot() {
+    hide('loginView');
+    show('appView');
+    document.getElementById('userGreeting').textContent = `Hola, ${user?.name || ''}`;
+  }
+
+  if (token && user) {
+    boot();
+  }
+</script>
+</body>
+</html>

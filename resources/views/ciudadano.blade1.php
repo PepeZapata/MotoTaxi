@@ -660,7 +660,7 @@
       { key: 'started', label: 'En curso' },
       { key: 'finished', label: 'Terminado' },
     ];
-    const doneStatuses = (trip.status_logs || []).map(function (l) { return l.status; });
+    const doneStatuses = (trip.statusLogs || []).map(function (l) { return l.status; });
     document.getElementById('tripTimeline').innerHTML = steps.map(function (s) {
       return '<div class="step ' + (doneStatuses.includes(s.key) ? 'done' : '') + '"><span class="dot"></span> ' + s.label + '</div>';
     }).join('');
@@ -669,8 +669,8 @@
     const assignmentStatus = assignment ? (assignment.acceptanceStatus || assignment.acceptance_status) : null;
     const statusKey = assignmentStatus || 'open';
 
-    if (assignment && assignment.driver_profile) {
-      const driverUser = assignment.driver_profile.user;
+    if (assignment && assignment.driverProfile) {
+      const driverUser = assignment.driverProfile.user;
       const plate = assignment.vehicle ? assignment.vehicle.plate : null;
 
       showFloating(STATUS_MESSAGES[statusKey] || 'Viaje en curso', {
@@ -679,7 +679,7 @@
         plate: plate,
       });
 
-      const loc = assignment.driver_profile.location;
+      const loc = assignment.driverProfile.location;
       if (!driverMarker && loc) {
         driverMarker = L.marker([loc.latitude, loc.longitude], { icon: motoIcon() }).addTo(map);
       }
@@ -714,9 +714,9 @@
 
     debugLog('Pidiendo /auth/me para saber tu citizen_profile_id...');
     api('/auth/me').then(function (me) {
-      const citizenProfileId = me.citizen_profile ? me.citizen_profile.id : null;
+      const citizenProfileId = me.citizenProfile ? me.citizenProfile.id : null;
       if (!citizenProfileId) {
-        debugLog('ERROR: /auth/me no trajo citizen_profile.id. Respuesta: ' + JSON.stringify(me));
+        debugLog('ERROR: /auth/me no trajo citizenProfile.id. Respuesta: ' + JSON.stringify(me));
         return;
       }
       debugLog('citizen_profile_id = ' + citizenProfileId + '. Conectando a Reverb en ' + REVERB_HOST + ':' + REVERB_PORT + ' (TLS=' + FORCE_TLS + ')...');

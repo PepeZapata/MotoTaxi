@@ -156,11 +156,12 @@
 
 <script>
   // ---------- Config ----------
-  const API_BASE = window.location.origin + '/api';
-  const REVERB_APP_KEY = 'uj2v4cwquzmd5nuvxz2u'; // debe coincidir con REVERB_APP_KEY de tu .env
-  const REVERB_HOST = 'localhost';
-  const REVERB_PORT = 8080;
-  const LOCATION_REFRESH_MS = 15000; // cada cuánto reportamos ubicación mientras está disponible
+const API_BASE = window.location.origin + '/api';
+const IS_PRODUCTION = window.location.protocol === 'https:';
+const REVERB_APP_KEY = 'uj2v4cwquzmd5nuvxz2u';
+const REVERB_HOST = IS_PRODUCTION ? 'mototaxi-reverb.onrender.com' : window.location.hostname;
+const REVERB_PORT = IS_PRODUCTION ? 443 : 8080;
+const LOCATION_REFRESH_MS = 15000; // cada cuánto reportamos ubicación mientras está disponible
 
   // ---------- Estado ----------
   let token = localStorage.getItem('mototaxi_driver_token') || null;
@@ -309,8 +310,8 @@
         wsHost: REVERB_HOST,
         wsPort: REVERB_PORT,
         wssPort: REVERB_PORT,
-        forceTLS: false,
-        enabledTransports: ['ws'],
+        forceTLS: IS_PRODUCTION,
+        enabledTransports: IS_PRODUCTION ? ['ws', 'wss'] : ['ws'],
         disableStats: true,
         authEndpoint: window.location.origin + '/broadcasting/auth',
         auth: { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' } },

@@ -17,6 +17,18 @@ ENV APACHE_DOCUMENT_ROOT /var/www/html/public
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
 RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf
 
+# Permitir que el .htaccess de Laravel (en public/) funcione: sin esto,
+# Apache ignora las reglas de reescritura y cualquier ruta que no sea
+# un archivo físico da 404 (por ejemplo, todo lo que empieza con /api/*).
+RUN { \
+    echo '<Directory ${APACHE_DOCUMENT_ROOT}>'; \
+    echo '    Options Indexes FollowSymLinks'; \
+    echo '    AllowOverride All'; \
+    echo '    Require all granted'; \
+    echo '</Directory>'; \
+} > /etc/apache2/conf-available/laravel.conf \
+    && a2enconf laravel
+
 # Establecer directorio de trabajo y copiar el código
 WORKDIR /var/www/html
 COPY . .
@@ -31,4 +43,3 @@ RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
 
 CMD php artisan config:clear && php artisan migrate --force && apache2-foreground
-

@@ -20,6 +20,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/auth/me', [AuthController::class, 'me']);
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/geo/zone', [GeoController::class, 'zone']);
+    Route::get('/drivers/nearby', [DriverLocationController::class, 'nearby']);
 
     // ---------- Conductor ----------
     // IMPORTANTE: /service-requests/open debe declararse ANTES que

@@ -70,7 +70,7 @@ class ServiceRequestController extends Controller
      */
     public function show(Request $request, ServiceRequest $serviceRequest)
     {
-        $serviceRequest->load(['assignment.driverProfile.user', 'statusLogs']);
+        $serviceRequest->load(['assignment.driverProfile.user', 'assignment.vehicle', 'statusLogs']);
 
         return response()->json($serviceRequest);
     }

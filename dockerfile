@@ -30,4 +30,5 @@ RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs
 # Configurar permisos para que Laravel pueda escribir logs y caché
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
 
-CMD php artisan migrate --force && apache2-foreground
+CMD php artisan config:clear && php artisan migrate --force && apache2-foreground
+

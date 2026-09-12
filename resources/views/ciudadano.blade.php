@@ -97,11 +97,18 @@
   .driver-info .name { font-weight: 600; font-size: 13px; }
   .driver-info .plate { font-size: 12px; color: var(--muted); }
 
-  .timeline { margin-top: 14px; padding-left: 4px; }
-  .timeline .step { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; color: var(--muted); }
-  .timeline .step.done { color: var(--text); }
-  .timeline .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+  .timeline { display: flex; align-items: flex-start; margin-top: 12px; margin-bottom: 4px; }
+  .timeline .step {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    font-size: 10px; color: var(--muted); text-align: center; position: relative;
+  }
+  .timeline .step.done { color: var(--text); font-weight: 600; }
+  .timeline .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border); margin-bottom: 4px; z-index: 1; }
   .timeline .step.done .dot { background: var(--success); }
+  .timeline .step:not(:last-child)::after {
+    content: ''; position: absolute; top: 5px; left: 55%; width: 90%; height: 2px; background: var(--border); z-index: 0;
+  }
+  .timeline .step.done:not(:last-child)::after { background: var(--success); }
 
   .userbar { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 16px; }
   .userbar button { width: auto; margin: 0; padding: 6px 12px; font-size: 12px; }
@@ -211,6 +218,12 @@
       <p class="hint" id="realtimeStatus">Conectando al canal en vivo...</p>
       <button class="secondary" onclick="newTrip()">Pedir otro viaje</button>
     </div>
+
+    <!-- Panel de diagnóstico: útil en el celular, donde no hay consola F12 -->
+    <div class="card">
+      <h2>Diagnóstico</h2>
+      <div id="debugLog" style="font-family: monospace; font-size: 11px; color: #475569; background: #f1f5f9; padding: 8px; border-radius: 6px; max-height: 140px; overflow-y: auto; white-space: pre-wrap;"></div>
+    </div>
   </div>
 </div>
 
@@ -227,6 +240,7 @@
   let currentTripId = localStorage.getItem('mototaxi_trip_id') || null;
   let pusher = null;
   let tripChannel = null;
+  let tripPollInterval = null;
 
   async function api(path, options = {}) {
     const res = await fetch(API_BASE + path, {
@@ -253,6 +267,14 @@
   function show(id) { document.getElementById(id).classList.remove('hidden'); }
   function hide(id) { document.getElementById(id).classList.add('hidden'); }
 
+  function debugLog(msg) {
+    const el = document.getElementById('debugLog');
+    if (!el) return;
+    const time = new Date().toLocaleTimeString();
+    el.textContent += '[' + time + '] ' + msg + '\n';
+    el.scrollTop = el.scrollHeight;
+  }
+
   async function login() {
     const email = document.getElementById('loginEmail').value.trim();
     const password = document.getElementById('loginPassword').value;
@@ -278,6 +300,7 @@
     localStorage.removeItem('mototaxi_trip_id');
     token = null; user = null; currentTripId = null;
     if (pusher) pusher.disconnect();
+    if (tripPollInterval) clearInterval(tripPollInterval);
     hide('appView');
     show('loginView');
   }
@@ -410,7 +433,7 @@
         try {
           const center = map.getCenter();
           const url = 'https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(q) +
-            '&limit=5&addressdetails=0&viewbox=' + (center.lng - 0.3) + ',' + (center.lat + 0.3) + ',' + (center.lng + 0.3) + ',' + (center.lat - 0.3) + '&bounded=0';
+            '&limit=5&addressdetails=0&countrycodes=mx&viewbox=' + (center.lng - 0.3) + ',' + (center.lat + 0.3) + ',' + (center.lng + 0.3) + ',' + (center.lat - 0.3) + '&bounded=0';
           const res = await fetch(url);
           const results = await res.json();
 
@@ -573,6 +596,7 @@
     currentTripId = null;
     localStorage.removeItem('mototaxi_trip_id');
     if (tripChannel) pusher.unsubscribe(tripChannel.name);
+    if (tripPollInterval) clearInterval(tripPollInterval);
 
     hide('tripView');
     show('createView');
@@ -631,10 +655,10 @@
     badge.className = 'status-badge status-' + trip.status;
 
     const steps = [
-      { key: 'requested', label: 'Solicitud creada' },
-      { key: 'accepted', label: 'Conductor asignado' },
-      { key: 'started', label: 'Viaje en curso' },
-      { key: 'finished', label: 'Viaje terminado' },
+      { key: 'requested', label: 'Creado' },
+      { key: 'accepted', label: 'Asignado' },
+      { key: 'started', label: 'En curso' },
+      { key: 'finished', label: 'Terminado' },
     ];
     const doneStatuses = (trip.statusLogs || []).map(function (l) { return l.status; });
     document.getElementById('tripTimeline').innerHTML = steps.map(function (s) {
@@ -686,11 +710,16 @@
   }
 
   function connectRealtime() {
-    if (!user) return;
+    if (!user) { debugLog('connectRealtime: no hay usuario en memoria, cancelando.'); return; }
 
+    debugLog('Pidiendo /auth/me para saber tu citizen_profile_id...');
     api('/auth/me').then(function (me) {
       const citizenProfileId = me.citizenProfile ? me.citizenProfile.id : null;
-      if (!citizenProfileId) return;
+      if (!citizenProfileId) {
+        debugLog('ERROR: /auth/me no trajo citizenProfile.id. Respuesta: ' + JSON.stringify(me));
+        return;
+      }
+      debugLog('citizen_profile_id = ' + citizenProfileId + '. Conectando a Reverb en ' + REVERB_HOST + ':' + REVERB_PORT + ' (TLS=' + FORCE_TLS + ')...');
 
       if (!pusher) {
         pusher = new Pusher(REVERB_APP_KEY, {
@@ -707,9 +736,17 @@
 
         pusher.connection.bind('connected', function () {
           document.getElementById('realtimeStatus').textContent = 'Conectado - esperando actualizaciones...';
+          debugLog('Pusher/Reverb: conectado.');
         });
-        pusher.connection.bind('error', function () {
+        pusher.connection.bind('unavailable', function () {
+          debugLog('Pusher/Reverb: servidor no disponible (unavailable).');
+        });
+        pusher.connection.bind('failed', function () {
+          debugLog('Pusher/Reverb: conexion fallida (failed) - revisa REVERB_HOST/PORT.');
+        });
+        pusher.connection.bind('error', function (err) {
           document.getElementById('realtimeStatus').textContent = 'No se pudo conectar al servidor en tiempo real.';
+          debugLog('Pusher/Reverb ERROR: ' + JSON.stringify(err));
         });
       }
 
@@ -717,20 +754,28 @@
 
       tripChannel.bind('pusher:subscription_succeeded', function () {
         document.getElementById('realtimeStatus').textContent = 'Escuchando actualizaciones en vivo de tu viaje.';
+        debugLog('Suscrito a private-citizen.' + citizenProfileId + ' correctamente.');
+      });
+
+      tripChannel.bind('pusher:subscription_error', function (status) {
+        debugLog('ERROR al suscribirse al canal: ' + JSON.stringify(status));
       });
 
       tripChannel.bind('trip-assignment.accepted', function (data) {
+        debugLog('Evento trip-assignment.accepted recibido para solicitud #' + data.service_request_id);
         if (data.service_request_id != currentTripId) return;
         loadTrip();
       });
 
       tripChannel.bind('trip-status.updated', function (data) {
+        debugLog('Evento trip-status.updated recibido: ' + data.status + ' (solicitud #' + data.service_request_id + ')');
         if (data.service_request_id != currentTripId) return;
         loadTrip();
       });
 
       tripChannel.bind('driver-location.updated', function (data) {
         if (data.service_request_id != currentTripId) return;
+        debugLog('Ubicacion del conductor actualizada: ' + data.lat.toFixed(5) + ', ' + data.lng.toFixed(5));
 
         if (!driverMarker) {
           driverMarker = L.marker([data.lat, data.lng], { icon: motoIcon() }).addTo(map);
@@ -738,8 +783,19 @@
           animateMarkerTo(driverMarker, data.lat, data.lng);
         }
       });
+    }).catch(function (e) {
+      debugLog('ERROR llamando /auth/me: ' + e.message);
     });
+
+    // Respaldo: aunque el tiempo real falle, refrescamos el estado del viaje
+    // cada 6 segundos mientras siga activo, para no depender 100% de Reverb.
+    if (tripPollInterval) clearInterval(tripPollInterval);
+    tripPollInterval = setInterval(function () {
+      if (currentTripId) loadTrip();
+      else clearInterval(tripPollInterval);
+    }, 6000);
   }
+
 
   function boot() {
     hide('loginView');

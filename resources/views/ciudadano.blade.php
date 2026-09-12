@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mototaxi - Ciudadano</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pusher/8.4.0/pusher.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   :root {
     --primary: #1d4ed8;
@@ -105,6 +107,15 @@
   .userbar button { width: auto; margin: 0; padding: 6px 12px; font-size: 12px; }
 
   #connLog { font-family: monospace; font-size: 11px; color: #94a3b8; background: #0f172a; padding: 8px; border-radius: 6px; max-height: 100px; overflow-y: auto; margin-top: 10px; }
+
+  .map-toggle { display: flex; gap: 8px; margin-bottom: 10px; }
+  .map-mode {
+    flex: 1; margin: 0; padding: 8px; font-size: 12px; font-weight: 600;
+    background: #f1f5f9; color: var(--muted); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .map-mode.active.origin-mode { background: #16a34a; color: white; border-color: #16a34a; }
+  .map-mode.active.dest-mode { background: #dc2626; color: white; border-color: #dc2626; }
+  #map { height: 240px; border-radius: 10px; border: 1px solid var(--border); z-index: 0; }
 </style>
 </head>
 <body>
@@ -136,20 +147,19 @@
     <div id="createView" class="card">
       <h2>¿A dónde vas?</h2>
 
-      <label>Origen</label>
-      <input id="originAddress" placeholder="Dirección de origen (opcional, solo referencia)">
-      <div style="display:flex; gap:8px;">
-        <input id="originLat" placeholder="Lat origen" value="20.9674">
-        <input id="originLng" placeholder="Lng origen" value="-89.5926">
+      <div class="map-toggle">
+        <button type="button" class="map-mode active" id="modeOriginBtn" onclick="setMapMode('origin')">📍 Marcar origen</button>
+        <button type="button" class="map-mode" id="modeDestBtn" onclick="setMapMode('destination')">🏁 Marcar destino</button>
       </div>
-      <button class="secondary" onclick="useMyLocation()" style="margin-top:8px;">📍 Usar mi ubicación actual</button>
+      <div id="map"></div>
+      <p class="hint">Toca el mapa para poner el pin, o arrástralo para ajustar. Empieza marcando el origen.</p>
+      <button class="secondary" onclick="useMyLocation()">📍 Usar mi ubicación actual como origen</button>
+
+      <label>Origen</label>
+      <input id="originAddress" placeholder="Se autocompleta al marcar en el mapa">
 
       <label>Destino</label>
-      <input id="destAddress" placeholder="Dirección de destino (opcional, solo referencia)">
-      <div style="display:flex; gap:8px;">
-        <input id="destLat" placeholder="Lat destino" value="20.9738">
-        <input id="destLng" placeholder="Lng destino" value="-89.6155">
-      </div>
+      <input id="destAddress" placeholder="Se autocompleta al marcar en el mapa">
 
       <button onclick="createTrip()" id="createBtn">Pedir mototaxi</button>
       <div id="createError" class="error hidden"></div>
@@ -250,7 +260,102 @@
     show('loginView');
   }
 
-  // ---------- Ubicación del navegador ----------
+  // ---------- Mapa (Leaflet + OpenStreetMap) ----------
+  let map = null;
+  let originMarker = null;
+  let destMarker = null;
+  let mapMode = 'origin'; // 'origin' o 'destination' — qué pin coloca el próximo tap
+  let originCoords = null; // { lat, lng }
+  let destCoords = null;
+
+  // Centro por defecto: Mérida, Yucatán. Se recentra solo si el usuario
+  // usa "mi ubicación actual".
+  const DEFAULT_CENTER = [20.9674, -89.5926];
+
+  function initMap() {
+    if (map) return; // ya inicializado, no crear dos veces
+    map = L.map('map').setView(DEFAULT_CENTER, 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    map.on('click', (e) => placePin(mapMode, e.latlng.lat, e.latlng.lng));
+
+    // Arranca centrado en Mérida sin pin todavía — el usuario marca origen primero.
+    setMapMode('origin');
+  }
+
+  function setMapMode(mode) {
+    mapMode = mode;
+    const originBtn = document.getElementById('modeOriginBtn');
+    const destBtn = document.getElementById('modeDestBtn');
+    originBtn.classList.toggle('active', mode === 'origin');
+    originBtn.classList.toggle('origin-mode', mode === 'origin');
+    destBtn.classList.toggle('active', mode === 'destination');
+    destBtn.classList.toggle('dest-mode', mode === 'destination');
+  }
+
+  function placePin(type, lat, lng) {
+    const isOrigin = type === 'origin';
+    const color = isOrigin ? '#16a34a' : '#dc2626';
+    const icon = L.divIcon({
+      html: `<div style="background:${color};width:20px;height:20px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4)"></div>`,
+      iconSize: [20, 20],
+      iconAnchor: [10, 20],
+      className: '',
+    });
+
+    if (isOrigin) {
+      if (originMarker) originMarker.setLatLng([lat, lng]);
+      else {
+        originMarker = L.marker([lat, lng], { icon, draggable: true }).addTo(map);
+        originMarker.on('dragend', () => {
+          const p = originMarker.getLatLng();
+          setOriginCoords(p.lat, p.lng);
+        });
+      }
+      setOriginCoords(lat, lng);
+      // Después de marcar origen, pasamos automáticamente a modo destino.
+      if (!destCoords) setMapMode('destination');
+    } else {
+      if (destMarker) destMarker.setLatLng([lat, lng]);
+      else {
+        destMarker = L.marker([lat, lng], { icon, draggable: true }).addTo(map);
+        destMarker.on('dragend', () => {
+          const p = destMarker.getLatLng();
+          setDestCoords(p.lat, p.lng);
+        });
+      }
+      setDestCoords(lat, lng);
+    }
+  }
+
+  function setOriginCoords(lat, lng) {
+    originCoords = { lat, lng };
+    reverseGeocode(lat, lng, 'originAddress');
+  }
+
+  function setDestCoords(lat, lng) {
+    destCoords = { lat, lng };
+    reverseGeocode(lat, lng, 'destAddress');
+  }
+
+  // Geocodificación inversa gratuita (Nominatim/OpenStreetMap) solo para
+  // autocompletar el campo de dirección — si falla o tarda, no bloquea nada,
+  // el pin en el mapa ya guardó las coordenadas reales que se usan para crear el viaje.
+  async function reverseGeocode(lat, lng, inputId) {
+    const input = document.getElementById(inputId);
+    input.value = 'Buscando dirección...';
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
+      const data = await res.json();
+      input.value = data.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    } catch (e) {
+      input.value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    }
+  }
+
   function useMyLocation() {
     if (!navigator.geolocation) {
       alert('Tu navegador no soporta geolocalización.');
@@ -258,25 +363,33 @@
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        document.getElementById('originLat').value = pos.coords.latitude.toFixed(7);
-        document.getElementById('originLng').value = pos.coords.longitude.toFixed(7);
+        map.setView([pos.coords.latitude, pos.coords.longitude], 15);
+        placePin('origin', pos.coords.latitude, pos.coords.longitude);
       },
-      () => alert('No se pudo obtener tu ubicación. Puedes escribir las coordenadas manualmente.')
+      () => alert('No se pudo obtener tu ubicación. Marca el origen tocando el mapa.')
     );
   }
 
   // ---------- Crear viaje ----------
   async function createTrip() {
     hide('createError');
+
+    if (!originCoords || !destCoords) {
+      const el = document.getElementById('createError');
+      el.textContent = 'Marca el origen y el destino en el mapa antes de continuar.';
+      show('createError');
+      return;
+    }
+
     document.getElementById('createBtn').disabled = true;
 
     try {
       const body = {
-        origin_lat: parseFloat(document.getElementById('originLat').value),
-        origin_lng: parseFloat(document.getElementById('originLng').value),
+        origin_lat: originCoords.lat,
+        origin_lng: originCoords.lng,
         origin_address: document.getElementById('originAddress').value || null,
-        destination_lat: parseFloat(document.getElementById('destLat').value),
-        destination_lng: parseFloat(document.getElementById('destLng').value),
+        destination_lat: destCoords.lat,
+        destination_lng: destCoords.lng,
         destination_address: document.getElementById('destAddress').value || null,
       };
 
@@ -302,6 +415,15 @@
     if (tripChannel) pusher.unsubscribe(tripChannel.name);
     hide('tripView');
     show('createView');
+
+    // Reinicia el mapa: quita los pines anteriores para el viaje nuevo.
+    if (originMarker) { map.removeLayer(originMarker); originMarker = null; }
+    if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
+    originCoords = null; destCoords = null;
+    document.getElementById('originAddress').value = '';
+    document.getElementById('destAddress').value = '';
+    setMapMode('origin');
+    setTimeout(() => map.invalidateSize(), 100); // por si el contenedor estaba oculto
   }
 
   // ---------- Cargar y pintar el estado del viaje ----------
@@ -403,11 +525,14 @@
     show('appView');
     document.getElementById('userGreeting').textContent = `Hola, ${user?.name || ''}`;
 
+    initMap();
+
     if (currentTripId) {
       hide('createView');
       loadTrip().then(connectRealtime);
     } else {
       show('createView');
+      setTimeout(() => map.invalidateSize(), 100);
     }
   }
 

@@ -183,6 +183,7 @@
   let currentTrip = null; // { id (service_request_id), assignmentId, status, origin, destination, originAddress, destinationAddress }
   let locationInterval = null;
   let lastLat = null, lastLng = null;
+  let lastHeading = null; // último rumbo conocido (0-359°), para rotar el ícono de la moto
 
   // ---------- Mapa ----------
   let map = null;
@@ -226,10 +227,58 @@
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) return reject(new Error('Sin geolocalización'));
       navigator.geolocation.getCurrentPosition(
-        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        (pos) => resolve({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          // El navegador solo entrega "heading" cuando el dispositivo lo soporta
+          // y se está moviendo; si no, llega null y lo calculamos nosotros (ver resolveHeading).
+          heading: (typeof pos.coords.heading === 'number' && !isNaN(pos.coords.heading))
+            ? pos.coords.heading
+            : null,
+        }),
         (err) => reject(err)
       );
     });
+  }
+
+  // Distancia aproximada en metros entre dos coordenadas (fórmula haversine).
+  function distanceMeters(lat1, lng1, lat2, lng2) {
+    const R = 6371000;
+    const toRad = (d) => (d * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  // Rumbo (0-359°, 0 = norte) entre dos coordenadas.
+  function bearingDegrees(lat1, lng1, lat2, lng2) {
+    const toRad = (d) => (d * Math.PI) / 180;
+    const toDeg = (r) => (r * 180) / Math.PI;
+    const y = Math.sin(toRad(lng2 - lng1)) * Math.cos(toRad(lat2));
+    const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+      Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lng2 - lng1));
+    return (toDeg(Math.atan2(y, x)) + 360) % 360;
+  }
+
+  // Decide qué rumbo usar: el que reporta el GPS si viene, o si no,
+  // lo calculamos comparando contra el punto anterior (solo si nos movimos
+  // lo suficiente, para no "bailar" el ícono por el ruido del GPS parado).
+  function resolveHeading(prevLat, prevLng, newLat, newLng, gpsHeading) {
+    // El backend valida "between:0,359": 360 (redondeo de 359.6°) debe pasar a 0.
+    const clamp360 = (deg) => Math.round(deg) % 360;
+
+    if (gpsHeading !== null && gpsHeading !== undefined) return clamp360(gpsHeading);
+
+    if (prevLat !== null && prevLng !== null) {
+      const moved = distanceMeters(prevLat, prevLng, newLat, newLng);
+      if (moved >= 3) {
+        return clamp360(bearingDegrees(prevLat, prevLng, newLat, newLng));
+      }
+    }
+
+    return lastHeading; // sin movimiento suficiente: conservamos el rumbo anterior
   }
 
   // ---------- Mapa: helpers ----------
@@ -242,13 +291,34 @@
     });
   }
 
-  function motoIcon() {
+  // El emoji 🏍️ se dibuja "mirando" hacia la izquierda en la mayoría de
+  // fuentes (Noto/Apple), que equivale a un rumbo de 270°. MOTO_ICON_OFFSET
+  // corrige eso para que, al rotar según el heading real, el frente de la
+  // moto apunte hacia donde se está moviendo.
+  const MOTO_ICON_OFFSET = 270;
+
+  function motoIcon(heading) {
+    const rotation = (typeof heading === 'number') ? (heading - MOTO_ICON_OFFSET) : 0;
     return L.divIcon({
-      html: '<div style="font-size:20px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));">🏍️</div>',
+      html: '<div class="moto-rotor" style="font-size:20px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4)); ' +
+        'transform: rotate(' + rotation + 'deg); transition: transform 0.3s ease-out;">🏍️</div>',
       iconSize: [24, 24],
       iconAnchor: [12, 12],
       className: '',
     });
+  }
+
+  // Rota el ícono de un marcador ya existente sin reemplazarlo (evita
+  // parpadeos), manipulando directamente el elemento DOM que Leaflet creó.
+  function rotateMarkerIcon(marker, heading) {
+    if (typeof heading !== 'number') return;
+    const el = marker.getElement ? marker.getElement() : null;
+    const rotor = el ? el.querySelector('.moto-rotor') : null;
+    if (rotor) {
+      rotor.style.transform = 'rotate(' + (heading - MOTO_ICON_OFFSET) + 'deg)';
+    } else {
+      marker.setIcon(motoIcon(heading));
+    }
   }
 
   function animateMarkerTo(marker, newLat, newLng) {
@@ -281,12 +351,13 @@
     setTimeout(() => { if (map) map.invalidateSize(); }, 150);
   }
 
-  function updateOwnMarker(lat, lng) {
+  function updateOwnMarker(lat, lng, heading) {
     if (!map) return;
     if (!driverOwnMarker) {
-      driverOwnMarker = L.marker([lat, lng], { icon: motoIcon() }).addTo(map);
+      driverOwnMarker = L.marker([lat, lng], { icon: motoIcon(heading) }).addTo(map);
     } else {
       animateMarkerTo(driverOwnMarker, lat, lng);
+      rotateMarkerIcon(driverOwnMarker, heading);
     }
   }
 
@@ -433,6 +504,7 @@
       hide('requestsView');
       hide('mapCard');
       if (map) clearRequestMarkers();
+      lastHeading = null;
       log('Te desconectaste. Ya no recibirás solicitudes nuevas.');
       return;
     }
@@ -440,10 +512,11 @@
     // Pasar a online: primero necesitamos ubicación
     document.getElementById('toggleBtn').disabled = true;
     try {
-      const { lat, lng } = await getLocation();
-      lastLat = lat; lastLng = lng;
+      const { lat, lng, heading } = await getLocation();
+      const resolvedHeading = resolveHeading(lastLat, lastLng, lat, lng, heading);
+      lastLat = lat; lastLng = lng; lastHeading = resolvedHeading;
 
-      await api('/driver/location', { method: 'POST', body: { latitude: lat, longitude: lng } });
+      await api('/driver/location', { method: 'POST', body: { latitude: lat, longitude: lng, ...(resolvedHeading !== null ? { heading: resolvedHeading } : {}) } });
       await api('/driver/availability', { method: 'POST', body: { availability_status: 'available' } });
 
       pill.textContent = 'Disponible';
@@ -453,18 +526,21 @@
 
       show('requestsView');
       initDriverMap(lat, lng);
-      updateOwnMarker(lat, lng);
+      updateOwnMarker(lat, lng, resolvedHeading);
       showMapCard('Solicitudes cercanas');
       await refreshZoneAndSubscribe(lat, lng);
       await loadNearbyRequests(lat, lng);
 
       locationInterval = setInterval(async () => {
         try {
+          const prevLat = lastLat, prevLng = lastLng;
           const pos = await getLocation();
-          lastLat = pos.lat; lastLng = pos.lng;
-          await api('/driver/location', { method: 'POST', body: { latitude: pos.lat, longitude: pos.lng } });
+          const heading = resolveHeading(prevLat, prevLng, pos.lat, pos.lng, pos.heading);
+          lastLat = pos.lat; lastLng = pos.lng; lastHeading = heading;
+
+          await api('/driver/location', { method: 'POST', body: { latitude: pos.lat, longitude: pos.lng, ...(heading !== null ? { heading } : {}) } });
           await refreshZoneAndSubscribe(pos.lat, pos.lng);
-          updateOwnMarker(pos.lat, pos.lng);
+          updateOwnMarker(pos.lat, pos.lng, heading);
           if (currentTrip) updateTripRoute();
         } catch (e) {
           log('No se pudo actualizar ubicación: ' + e.message);

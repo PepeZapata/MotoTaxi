@@ -327,13 +327,31 @@
     });
   }
 
-  function motoIcon() {
+  // Mismo offset que en el panel del conductor: el emoji 🏍️ "mira" hacia la
+  // izquierda por defecto (rumbo 270°), así que lo compensamos al rotar.
+  const MOTO_ICON_OFFSET = 270;
+
+  function motoIcon(heading) {
+    const rotation = (typeof heading === 'number') ? (heading - MOTO_ICON_OFFSET) : 0;
     return L.divIcon({
-      html: '<div style="font-size:20px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));">M</div>',
+      html: '<div class="moto-rotor" style="font-size:20px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4)); ' +
+        'transform: rotate(' + rotation + 'deg); transition: transform 0.3s ease-out;">🏍️</div>',
       iconSize: [24, 24],
       iconAnchor: [12, 12],
       className: '',
     });
+  }
+
+  // Rota el ícono de un marcador ya existente sin reemplazarlo (evita parpadeos).
+  function rotateMarkerIcon(marker, heading) {
+    if (typeof heading !== 'number') return;
+    const el = marker.getElement ? marker.getElement() : null;
+    const rotor = el ? el.querySelector('.moto-rotor') : null;
+    if (rotor) {
+      rotor.style.transform = 'rotate(' + (heading - MOTO_ICON_OFFSET) + 'deg)';
+    } else {
+      marker.setIcon(motoIcon(heading));
+    }
   }
 
   function initMap() {
@@ -506,8 +524,9 @@
         seenIds.add(d.id);
         if (nearbyMarkers[d.id]) {
           nearbyMarkers[d.id].setLatLng([d.lat, d.lng]);
+          rotateMarkerIcon(nearbyMarkers[d.id], d.heading);
         } else {
-          nearbyMarkers[d.id] = L.marker([d.lat, d.lng], { icon: motoIcon() }).addTo(map);
+          nearbyMarkers[d.id] = L.marker([d.lat, d.lng], { icon: motoIcon(d.heading) }).addTo(map);
         }
       });
 
@@ -681,7 +700,7 @@
 
       const loc = assignment.driver_profile.location;
       if (!driverMarker && loc) {
-        driverMarker = L.marker([loc.latitude, loc.longitude], { icon: motoIcon() }).addTo(map);
+        driverMarker = L.marker([loc.latitude, loc.longitude], { icon: motoIcon(loc.heading) }).addTo(map);
       }
 
       if (['started', 'in_progress'].includes(trip.status) && trip.origin_lat) {
@@ -778,9 +797,10 @@
         debugLog('Ubicacion del conductor actualizada: ' + data.lat.toFixed(5) + ', ' + data.lng.toFixed(5));
 
         if (!driverMarker) {
-          driverMarker = L.marker([data.lat, data.lng], { icon: motoIcon() }).addTo(map);
+          driverMarker = L.marker([data.lat, data.lng], { icon: motoIcon(data.heading) }).addTo(map);
         } else {
           animateMarkerTo(driverMarker, data.lat, data.lng);
+          rotateMarkerIcon(driverMarker, data.heading);
         }
       });
     }).catch(function (e) {

@@ -97,6 +97,7 @@
   .leaflet-popup-content button { width: auto; margin-top: 6px; padding: 6px 10px; }
 </style>
 @include('partials.bottom-sheet')
+@include('partials.route-helpers')
 </head>
 <body>
 
@@ -246,16 +247,7 @@
     });
   }
 
-  // Distancia aproximada en metros entre dos coordenadas (fórmula haversine).
-  function distanceMeters(lat1, lng1, lat2, lng2) {
-    const R = 6371000;
-    const toRad = (d) => (d * Math.PI) / 180;
-    const dLat = toRad(lat2 - lat1);
-    const dLng = toRad(lng2 - lng1);
-    const a = Math.sin(dLat / 2) ** 2 +
-      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
+  // distanceMeters() viene de partials/route-helpers.blade.php
 
   // Rumbo (0-359°, 0 = norte) entre dos coordenadas.
   function bearingDegrees(lat1, lng1, lat2, lng2) {
@@ -398,14 +390,17 @@
     nearbyMarkers = {};
   }
 
-  let lastRoutedFrom = null; // último punto desde el que calculamos ruta real (para no pedirla de más)
+  let lastRouteCoords = null; // [[lat,lng], ...] de la última ruta real que trazamos
+  const ROUTE_RECALC_THRESHOLD_M = 35; // cuánto se tiene que desviar de la ruta trazada para recalcular
 
-  async function drawTripRoute(from, to, color, force) {
+  async function drawTripRoute(from, to, color, force, cacheKey) {
     // El servidor demo de OSRM es gratuito pero limitado: no tiene caso
-    // pedir una ruta nueva si el conductor casi no se movió desde la
-    // última vez que sí la calculamos.
-    if (!force && lastRoutedFrom && distanceMeters(lastRoutedFrom.lat, lastRoutedFrom.lng, from.lat, from.lng) < 25 && routeLine) {
-      return;
+    // pedir una ruta nueva solo porque el conductor avanzó un poco sobre
+    // la MISMA ruta ya trazada. Solo recalculamos si se desvió de verdad
+    // (dio vuelta, tomó otra calle...) más de ROUTE_RECALC_THRESHOLD_M.
+    if (!force && lastRouteCoords && routeLine) {
+      const deviation = distanceToPolylineMeters(from.lat, from.lng, lastRouteCoords);
+      if (deviation < ROUTE_RECALC_THRESHOLD_M) return;
     }
 
     try {
@@ -418,15 +413,31 @@
 
       if (routeLine) map.removeLayer(routeLine);
       routeLine = L.polyline(coords, { color: color, weight: 4, opacity: 0.7 }).addTo(map);
-      lastRoutedFrom = { lat: from.lat, lng: from.lng };
+      lastRouteCoords = coords;
+      saveRouteCache(cacheKey, coords);
     } catch (e) {
-      // Sin conexión a OSRM (o sin ruta): mostramos una línea recta punteada
-      // como respaldo, para no dejar al conductor sin ninguna referencia.
-      log('No se pudo calcular la ruta por calles (' + e.message + '); mostrando línea directa.');
+      // Sin conexión a OSRM: si tenemos una ruta real guardada de este
+      // mismo tramo (de una consulta anterior), la reutilizamos como
+      // referencia en vez de una línea recta "a ciegas".
+      const cached = loadRouteCache(cacheKey);
+      log('No se pudo calcular la ruta por calles (' + e.message + '); ' + (cached ? 'mostrando la última ruta conocida.' : 'mostrando línea directa.'));
       if (routeLine) map.removeLayer(routeLine);
-      routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: color, weight: 3, opacity: 0.5, dashArray: '6 6' }).addTo(map);
-      lastRoutedFrom = null; // para reintentar la próxima vez, sin esperar a que se mueva mucho
+      if (cached) {
+        routeLine = L.polyline(cached, { color: color, weight: 4, opacity: 0.45 }).addTo(map);
+        lastRouteCoords = cached;
+      } else {
+        routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: color, weight: 3, opacity: 0.5, dashArray: '6 6' }).addTo(map);
+        lastRouteCoords = null; // para reintentar la próxima vez, sin esperar a que se desvíe
+      }
     }
+  }
+
+  // Clave de caché para la ruta del tramo actual (cambia por viaje y por
+  // tramo: ir al punto de recogida vs. ir al destino).
+  function currentLegCacheKey() {
+    if (!currentTrip) return null;
+    const leg = ['accepted', 'en_route_to_pickup'].includes(currentTrip.status) ? 'pickup' : 'destination';
+    return 'driver_' + currentTrip.id + '_' + leg;
   }
 
   function setupTripMap() {
@@ -448,24 +459,24 @@
     if (lastLat) bounds.extend([lastLat, lastLng]);
     map.fitBounds(bounds, { padding: [30, 120] });
 
-    lastRoutedFrom = null; // viaje nuevo: forzamos a calcular la ruta real desde cero
+    lastRouteCoords = null; // viaje nuevo: forzamos a calcular la ruta real desde cero
     updateTripRoute(true);
   }
 
-  // force=true recalcula sí o sí (ignora el throttle de "no se movió lo
-  // suficiente"); se usa al iniciar el viaje y al cambiar de estado, porque
-  // en esos casos cambia por completo el tramo que hay que trazar.
+  // force=true recalcula sí o sí (ignora el umbral de desviación); se usa
+  // al iniciar el viaje y al cambiar de estado, porque en esos casos
+  // cambia por completo el tramo que hay que trazar.
   function updateTripRoute(force) {
     if (!map || !currentTrip || !currentTrip.origin) return;
     const driverPos = driverOwnMarker ? driverOwnMarker.getLatLng() : (lastLat ? { lat: lastLat, lng: lastLng } : null);
 
     if (['accepted', 'en_route_to_pickup'].includes(currentTrip.status) && driverPos) {
-      drawTripRoute(driverPos, currentTrip.origin, '#16a34a', force);
+      drawTripRoute(driverPos, currentTrip.origin, '#16a34a', force, currentLegCacheKey());
     } else if (currentTrip.status === 'arrived') {
       if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
-      lastRoutedFrom = null;
+      lastRouteCoords = null;
     } else if (currentTrip.status === 'started') {
-      drawTripRoute(currentTrip.origin, currentTrip.destination, '#1d4ed8', force);
+      drawTripRoute(currentTrip.origin, currentTrip.destination, '#1d4ed8', force, currentLegCacheKey());
     }
   }
 
@@ -473,7 +484,11 @@
     if (originMarker) { map.removeLayer(originMarker); originMarker = null; }
     if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
     if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
-    lastRoutedFrom = null;
+    if (currentTrip) {
+      clearRouteCache('driver_' + currentTrip.id + '_pickup');
+      clearRouteCache('driver_' + currentTrip.id + '_destination');
+    }
+    lastRouteCoords = null;
   }
 
   // ---------- Login ----------
@@ -734,7 +749,7 @@
       });
       currentTrip.status = step.next;
       renderTrip();
-      lastRoutedFrom = null; // cambió el estado: es un tramo distinto, recalculamos sí o sí
+      lastRouteCoords = null; // cambió el estado: es un tramo distinto, recalculamos sí o sí
       updateTripRoute(true);
     } catch (e) {
       alert('Error al actualizar el viaje: ' + e.message);

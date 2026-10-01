@@ -132,6 +132,7 @@
   .suggestions .item.loading { color: var(--muted); }
 </style>
 @include('partials.bottom-sheet')
+@include('partials.route-helpers')
 </head>
 <body>
 
@@ -544,26 +545,20 @@
     }
   }
 
-  // Distancia aproximada en metros entre dos coordenadas (fórmula haversine).
-  function distanceMeters(lat1, lng1, lat2, lng2) {
-    const R = 6371000;
-    const toRad = function (d) { return (d * Math.PI) / 180; };
-    const dLat = toRad(lat2 - lat1);
-    const dLng = toRad(lng2 - lng1);
-    const a = Math.sin(dLat / 2) ** 2 +
-      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
+  // distanceMeters() / distanceToPolylineMeters() / saveRouteCache() / etc.
+  // vienen de partials/route-helpers.blade.php
 
-  let lastRoutedFrom = null; // último punto desde el que calculamos ruta real (para no pedirla de más)
+  let lastRouteCoords = null; // [[lat,lng], ...] de la última ruta real que trazamos
+  const ROUTE_RECALC_THRESHOLD_M = 35; // cuánto se tiene que desviar de la ruta trazada para recalcular
 
-  async function drawRoute(from, to, color, force) {
+  async function drawRoute(from, to, color, force, cacheKey) {
     // El servidor demo de OSRM es gratuito pero limitado: no tiene caso
-    // pedir una ruta nueva si el punto de partida casi no cambió desde la
-    // última vez que sí la calculamos (p. ej. mientras el conductor avanza
-    // poco a poco hacia el origen, refrescado cada pocos segundos).
-    if (!force && lastRoutedFrom && distanceMeters(lastRoutedFrom.lat, lastRoutedFrom.lng, from.lat, from.lng) < 25 && routeLine) {
-      return;
+    // pedir una ruta nueva solo porque el conductor avanzó un poco sobre la
+    // MISMA ruta ya trazada. Solo recalculamos si se desvió de verdad más
+    // de ROUTE_RECALC_THRESHOLD_M (dio vuelta, tomó otra calle...).
+    if (!force && lastRouteCoords && routeLine) {
+      const deviation = distanceToPolylineMeters(from.lat, from.lng, lastRouteCoords);
+      if (deviation < ROUTE_RECALC_THRESHOLD_M) return;
     }
 
     try {
@@ -576,15 +571,32 @@
 
       if (routeLine) map.removeLayer(routeLine);
       routeLine = L.polyline(coords, { color: color, weight: 4, opacity: 0.7 }).addTo(map);
-      lastRoutedFrom = { lat: from.lat, lng: from.lng };
+      lastRouteCoords = coords;
+      saveRouteCache(cacheKey, coords);
     } catch (e) {
-      // Sin conexión a OSRM (o sin ruta): mostramos una línea recta punteada
-      // como respaldo, para no dejar sin ninguna referencia visual.
-      debugLog('No se pudo calcular la ruta por calles (' + e.message + '); mostrando línea directa.');
+      // Sin conexión a OSRM: si tenemos una ruta real guardada de este mismo
+      // tramo (de una consulta anterior), la reutilizamos en vez de una
+      // línea recta "a ciegas".
+      const cached = loadRouteCache(cacheKey);
+      debugLog('No se pudo calcular la ruta por calles (' + e.message + '); ' + (cached ? 'mostrando la última ruta conocida.' : 'mostrando línea directa.'));
       if (routeLine) map.removeLayer(routeLine);
-      routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: color, weight: 3, opacity: 0.5, dashArray: '6 6' }).addTo(map);
-      lastRoutedFrom = null; // para reintentar la próxima vez, sin esperar a que se mueva mucho
+      if (cached) {
+        routeLine = L.polyline(cached, { color: color, weight: 4, opacity: 0.45 }).addTo(map);
+        lastRouteCoords = cached;
+      } else {
+        routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: color, weight: 3, opacity: 0.5, dashArray: '6 6' }).addTo(map);
+        lastRouteCoords = null; // para reintentar la próxima vez, sin esperar a que se desvíe
+      }
     }
+  }
+
+  // Clave de caché para la ruta del tramo actual del viaje (cambia por
+  // viaje y por tramo: conductor yendo al punto de recogida vs. en curso
+  // hacia el destino).
+  function currentLegCacheKey(tripStatus) {
+    if (!currentTripId) return null;
+    const leg = ['started', 'in_progress'].includes(tripStatus) ? 'destination' : 'pickup';
+    return 'citizen_' + currentTripId + '_' + leg;
   }
 
   function animateMarkerTo(marker, newLat, newLng) {
@@ -627,6 +639,7 @@
       const trip = await api('/service-requests', { method: 'POST', body: body });
       currentTripId = trip.id;
       localStorage.setItem('mototaxi_trip_id', currentTripId);
+      lastRouteCoords = null; // viaje nuevo: forzamos a calcular su ruta real desde cero
 
       hide('createView');
       stopNearbyPolling();
@@ -644,6 +657,10 @@
   }
 
   function newTrip() {
+    if (currentTripId) {
+      clearRouteCache('citizen_' + currentTripId + '_pickup');
+      clearRouteCache('citizen_' + currentTripId + '_destination');
+    }
     currentTripId = null;
     localStorage.removeItem('mototaxi_trip_id');
     if (tripChannel) pusher.unsubscribe(tripChannel.name);
@@ -658,6 +675,7 @@
     if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
     if (driverMarker) { map.removeLayer(driverMarker); driverMarker = null; }
     if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+    lastRouteCoords = null;
     originCoords = null; destCoords = null;
     document.getElementById('originAddress').value = '';
     document.getElementById('destAddress').value = '';
@@ -740,11 +758,19 @@
         drawRoute(
           { lat: parseFloat(trip.origin_lat), lng: parseFloat(trip.origin_lng) },
           { lat: parseFloat(trip.destination_lat), lng: parseFloat(trip.destination_lng) },
-          '#1d4ed8'
+          '#1d4ed8',
+          false,
+          currentLegCacheKey(trip.status)
         );
       } else if (driverMarker && trip.origin_lat && !['started', 'in_progress'].includes(trip.status)) {
         const dp = driverMarker.getLatLng();
-        drawRoute({ lat: dp.lat, lng: dp.lng }, { lat: parseFloat(trip.origin_lat), lng: parseFloat(trip.origin_lng) }, '#16a34a');
+        drawRoute(
+          { lat: dp.lat, lng: dp.lng },
+          { lat: parseFloat(trip.origin_lat), lng: parseFloat(trip.origin_lng) },
+          '#16a34a',
+          false,
+          currentLegCacheKey(trip.status)
+        );
       }
     } else {
       showFloating(STATUS_MESSAGES.open);

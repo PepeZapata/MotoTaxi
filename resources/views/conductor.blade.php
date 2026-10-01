@@ -510,7 +510,11 @@
       .forEach((c) => {
         const channel = pusher.subscribe('private-' + c);
         channel.bind('service-request.created', (data) => {
-          log(`Nueva solicitud cercana recibida (#${data.id})`);
+          // El conductor puede estar suscrito a varias celdas vecinas que
+          // reciben el mismo evento; solo registramos/logueamos la primera vez.
+          if (!openRequests[data.id]) {
+            log(`Nueva solicitud cercana recibida (#${data.id})`);
+          }
           addRequestToList(data);
         });
       });

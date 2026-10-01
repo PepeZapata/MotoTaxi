@@ -51,6 +51,8 @@ class ServiceRequestCreated implements ShouldBroadcast
             'origin_lat' => $this->serviceRequest->origin_lat,
             'origin_lng' => $this->serviceRequest->origin_lng,
             'origin_address' => $this->serviceRequest->origin_address,
+            'destination_lat' => $this->serviceRequest->destination_lat,
+            'destination_lng' => $this->serviceRequest->destination_lng,
             'destination_address' => $this->serviceRequest->destination_address,
             'estimated_cost' => $this->serviceRequest->estimated_cost,
         ];

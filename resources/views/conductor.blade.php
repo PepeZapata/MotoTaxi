@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mototaxi - Conductor</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pusher/8.4.0/pusher.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   :root {
     --primary: #16a34a;
@@ -99,6 +101,9 @@
 
   #log { font-family: monospace; font-size: 11px; color: #94a3b8; background: #0f172a; padding: 8px; border-radius: 6px; max-height: 90px; overflow-y: auto; margin-top: 10px; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+  #driverMap { height: 280px; border-radius: 10px; z-index: 0; }
+  .leaflet-popup-content button { width: auto; margin-top: 6px; padding: 6px 10px; }
 </style>
 </head>
 <body>
@@ -136,6 +141,12 @@
       <p class="hint" id="locationHint">Necesitamos tu ubicación para mostrarte viajes cercanos.</p>
     </div>
 
+    <!-- Mapa: solicitudes cercanas como pines, o ruta del viaje en curso -->
+    <div id="mapCard" class="card hidden">
+      <h2 id="mapCardTitle">Mapa</h2>
+      <div id="driverMap"></div>
+    </div>
+
     <!-- Solicitudes cercanas -->
     <div id="requestsView" class="card hidden">
       <h2>Solicitudes cercanas</h2>
@@ -169,9 +180,17 @@
   let pusher = null;
   let subscribedChannels = []; // nombres completos, ej: "drivers.zone.d58r3"
   let openRequests = {}; // id -> request, para no duplicar en la lista
-  let currentTrip = null; // { id (service_request_id), assignmentId, status }
+  let currentTrip = null; // { id (service_request_id), assignmentId, status, origin, destination, originAddress, destinationAddress }
   let locationInterval = null;
   let lastLat = null, lastLng = null;
+
+  // ---------- Mapa ----------
+  let map = null;
+  let driverOwnMarker = null;
+  let nearbyMarkers = {}; // id de solicitud -> marker
+  let originMarker = null;
+  let destMarker = null;
+  let routeLine = null;
 
   // ---------- Helpers ----------
   async function api(path, options = {}) {
@@ -211,6 +230,158 @@
         (err) => reject(err)
       );
     });
+  }
+
+  // ---------- Mapa: helpers ----------
+  function pinIcon(color) {
+    return L.divIcon({
+      html: '<div style="background:' + color + ';width:20px;height:20px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4)"></div>',
+      iconSize: [20, 20],
+      iconAnchor: [10, 20],
+      className: '',
+    });
+  }
+
+  function motoIcon() {
+    return L.divIcon({
+      html: '<div style="font-size:20px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));">🏍️</div>',
+      iconSize: [24, 24],
+      iconAnchor: [12, 12],
+      className: '',
+    });
+  }
+
+  function animateMarkerTo(marker, newLat, newLng) {
+    const start = marker.getLatLng();
+    const startTime = performance.now();
+    const duration = 1000;
+
+    function step(now) {
+      const t = Math.min(1, (now - startTime) / duration);
+      const lat = start.lat + (newLat - start.lat) * t;
+      const lng = start.lng + (newLng - start.lng) * t;
+      marker.setLatLng([lat, lng]);
+      if (t < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  function initDriverMap(lat, lng) {
+    if (map) return;
+    map = L.map('driverMap').setView([lat, lng], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: 'OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+  }
+
+  function showMapCard(title) {
+    document.getElementById('mapCardTitle').textContent = title;
+    show('mapCard');
+    setTimeout(() => { if (map) map.invalidateSize(); }, 150);
+  }
+
+  function updateOwnMarker(lat, lng) {
+    if (!map) return;
+    if (!driverOwnMarker) {
+      driverOwnMarker = L.marker([lat, lng], { icon: motoIcon() }).addTo(map);
+    } else {
+      animateMarkerTo(driverOwnMarker, lat, lng);
+    }
+  }
+
+  function renderRequestMarkers() {
+    if (!map) return;
+    const ids = Object.keys(openRequests);
+    const seen = new Set();
+
+    ids.forEach((id) => {
+      const r = openRequests[id];
+      if (!r.origin_lat || !r.origin_lng) return;
+      seen.add(Number(id));
+      const lat = parseFloat(r.origin_lat), lng = parseFloat(r.origin_lng);
+
+      if (nearbyMarkers[id]) {
+        nearbyMarkers[id].setLatLng([lat, lng]);
+      } else {
+        const marker = L.marker([lat, lng], { icon: pinIcon('#f59e0b') }).addTo(map);
+        marker.bindPopup(
+          '<div style="font-size:13px;"><b>' + (r.origin_address || 'Origen (' + lat.toFixed(4) + ', ' + lng.toFixed(4) + ')') + '</b><br>' +
+          '&rarr; ' + (r.destination_address || 'Destino') + '<br>' +
+          (r.estimated_cost ? ('Estimado: $' + r.estimated_cost + '<br>') : '') +
+          '<button onclick="acceptRequest(' + r.id + ')">Aceptar viaje</button></div>'
+        );
+        nearbyMarkers[id] = marker;
+      }
+    });
+
+    Object.keys(nearbyMarkers).forEach((id) => {
+      if (!seen.has(Number(id))) {
+        map.removeLayer(nearbyMarkers[id]);
+        delete nearbyMarkers[id];
+      }
+    });
+  }
+
+  function clearRequestMarkers() {
+    Object.values(nearbyMarkers).forEach((m) => map.removeLayer(m));
+    nearbyMarkers = {};
+  }
+
+  async function drawTripRoute(from, to, color) {
+    try {
+      const url = 'https://router.project-osrm.org/route/v1/driving/' + from.lng + ',' + from.lat + ';' + to.lng + ',' + to.lat + '?overview=full&geometry=geojson';
+      const res = await fetch(url);
+      const data = await res.json();
+      const coords = data.routes[0].geometry.coordinates.map((c) => [c[1], c[0]]);
+
+      if (routeLine) map.removeLayer(routeLine);
+      routeLine = L.polyline(coords, { color: color, weight: 4, opacity: 0.7 }).addTo(map);
+    } catch (e) {
+      if (routeLine) map.removeLayer(routeLine);
+      routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: color, weight: 3, opacity: 0.5, dashArray: '6 6' }).addTo(map);
+    }
+  }
+
+  function setupTripMap() {
+    if (!map || !currentTrip || !currentTrip.origin) return;
+
+    if (!originMarker) {
+      originMarker = L.marker([currentTrip.origin.lat, currentTrip.origin.lng], { icon: pinIcon('#16a34a') })
+        .addTo(map).bindPopup('Recoger aquí: ' + (currentTrip.originAddress || ''));
+    }
+    if (!destMarker) {
+      destMarker = L.marker([currentTrip.destination.lat, currentTrip.destination.lng], { icon: pinIcon('#dc2626') })
+        .addTo(map).bindPopup('Destino: ' + (currentTrip.destinationAddress || ''));
+    }
+
+    const bounds = L.latLngBounds([
+      [currentTrip.origin.lat, currentTrip.origin.lng],
+      [currentTrip.destination.lat, currentTrip.destination.lng],
+    ]);
+    if (lastLat) bounds.extend([lastLat, lastLng]);
+    map.fitBounds(bounds, { padding: [30, 30] });
+
+    updateTripRoute();
+  }
+
+  function updateTripRoute() {
+    if (!map || !currentTrip || !currentTrip.origin) return;
+    const driverPos = driverOwnMarker ? driverOwnMarker.getLatLng() : (lastLat ? { lat: lastLat, lng: lastLng } : null);
+
+    if (['accepted', 'en_route_to_pickup'].includes(currentTrip.status) && driverPos) {
+      drawTripRoute(driverPos, currentTrip.origin, '#16a34a');
+    } else if (currentTrip.status === 'arrived') {
+      if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+    } else if (currentTrip.status === 'started') {
+      drawTripRoute(currentTrip.origin, currentTrip.destination, '#1d4ed8');
+    }
+  }
+
+  function clearTripMapLayers() {
+    if (originMarker) { map.removeLayer(originMarker); originMarker = null; }
+    if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
+    if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
   }
 
   // ---------- Login ----------
@@ -260,6 +431,8 @@
       document.getElementById('toggleBtn').textContent = 'Conectarme y recibir viajes';
       stopEverything();
       hide('requestsView');
+      hide('mapCard');
+      if (map) clearRequestMarkers();
       log('Te desconectaste. Ya no recibirás solicitudes nuevas.');
       return;
     }
@@ -279,6 +452,9 @@
       document.getElementById('locationHint').textContent = `Ubicación reportada: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 
       show('requestsView');
+      initDriverMap(lat, lng);
+      updateOwnMarker(lat, lng);
+      showMapCard('Solicitudes cercanas');
       await refreshZoneAndSubscribe(lat, lng);
       await loadNearbyRequests(lat, lng);
 
@@ -288,6 +464,8 @@
           lastLat = pos.lat; lastLng = pos.lng;
           await api('/driver/location', { method: 'POST', body: { latitude: pos.lat, longitude: pos.lng } });
           await refreshZoneAndSubscribe(pos.lat, pos.lng);
+          updateOwnMarker(pos.lat, pos.lng);
+          if (currentTrip) updateTripRoute();
         } catch (e) {
           log('No se pudo actualizar ubicación: ' + e.message);
         }
@@ -350,12 +528,14 @@
     openRequests = {};
     list.forEach((r) => { openRequests[r.id] = r; });
     renderRequests();
+    renderRequestMarkers();
   }
 
   function addRequestToList(data) {
     if (currentTrip) return; // si ya tiene un viaje activo, no lo saturamos con más solicitudes
     openRequests[data.id] = data;
     renderRequests();
+    renderRequestMarkers();
   }
 
   function renderRequests() {
@@ -383,11 +563,23 @@
   }
 
   async function acceptRequest(id) {
+    const reqData = openRequests[id]; // coords/direcciones, las necesitamos para el mapa del viaje
     try {
       const assignment = await api(`/service-requests/${id}/accept`, { method: 'POST' });
-      currentTrip = { id: assignment.service_request_id, assignmentId: assignment.id, status: assignment.acceptance_status };
+      currentTrip = {
+        id: assignment.service_request_id,
+        assignmentId: assignment.id,
+        status: assignment.acceptance_status,
+        origin: reqData ? { lat: parseFloat(reqData.origin_lat), lng: parseFloat(reqData.origin_lng) } : null,
+        destination: reqData ? { lat: parseFloat(reqData.destination_lat), lng: parseFloat(reqData.destination_lng) } : null,
+        originAddress: reqData ? reqData.origin_address : null,
+        destinationAddress: reqData ? reqData.destination_address : null,
+      };
       openRequests = {};
       hide('requestsView');
+      clearRequestMarkers();
+      showMapCard('Tu viaje');
+      setupTripMap();
       renderTrip();
     } catch (e) {
       alert('No se pudo aceptar: ' + e.message + '\n(probablemente otro conductor la tomó primero)');
@@ -418,6 +610,8 @@
         currentTrip = null;
         hide('tripView');
         show('requestsView');
+        clearTripMapLayers();
+        showMapCard('Solicitudes cercanas');
         if (lastLat) loadNearbyRequests(lastLat, lastLng);
       }, 2000);
       return;
@@ -437,6 +631,7 @@
       });
       currentTrip.status = step.next;
       renderTrip();
+      updateTripRoute();
     } catch (e) {
       alert('Error al actualizar el viaje: ' + e.message);
     }

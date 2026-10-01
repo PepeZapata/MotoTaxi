@@ -20,12 +20,12 @@
     --warn: #d97706;
   }
   * { box-sizing: border-box; }
-  body {
+  html, body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--bg);
     color: var(--text);
     margin: 0;
-    min-height: 100vh;
+    height: 100%;
   }
   .app { max-width: 480px; margin: 0 auto; padding: 24px 16px 60px; }
   header { text-align: center; margin-bottom: 20px; }
@@ -74,11 +74,6 @@
   .error { color: var(--danger); font-size: 13px; margin-top: 8px; }
   .hidden { display: none !important; }
 
-  .userbar { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 16px; }
-  .userbar button { width: auto; margin: 0; padding: 6px 12px; font-size: 12px; }
-
-  .toggle-row { display: flex; justify-content: space-between; align-items: center; }
-  .toggle-row .label { font-size: 14px; font-weight: 600; }
   .pill { font-size: 12px; padding: 4px 10px; border-radius: 999px; font-weight: 600; }
   .pill-off { background: #fee2e2; color: #991b1b; }
   .pill-on { background: #dcfce7; color: #166534; }
@@ -94,26 +89,24 @@
   .request-item button { margin-top: 8px; }
   .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 20px 0; }
 
-  .trip-step {
-    display: block; margin-top: 8px;
-  }
   .status-badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: #dbeafe; color: #1e40af; }
 
   #log { font-family: monospace; font-size: 11px; color: #94a3b8; background: #0f172a; padding: 8px; border-radius: 6px; max-height: 90px; overflow-y: auto; margin-top: 10px; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
 
-  #driverMap { height: 280px; border-radius: 10px; z-index: 0; }
   .leaflet-popup-content button { width: auto; margin-top: 6px; padding: 6px 10px; }
 </style>
+@include('partials.bottom-sheet')
 </head>
 <body>
-<div class="app">
+
+<!-- ===================== LOGIN ===================== -->
+<div id="authScreen" class="app">
   <header>
     <h1>🏍️ Mototaxi</h1>
     <p>App del conductor</p>
   </header>
 
-  <!-- ===================== LOGIN ===================== -->
   <div id="loginView" class="card">
     <h2>Iniciar sesión</h2>
     <label>Correo</label>
@@ -123,45 +116,50 @@
     <button onclick="login()">Entrar</button>
     <div id="loginError" class="error hidden"></div>
   </div>
+</div>
 
-  <!-- ===================== APP (logueado) ===================== -->
-  <div id="appView" class="hidden">
-    <div class="userbar">
-      <span id="userGreeting"></span>
-      <button class="secondary" onclick="logout()">Cerrar sesión</button>
+<!-- ===================== APP (logueado): mapa full-screen + sheet ===================== -->
+<div id="appView" class="app-shell hidden">
+  <div id="driverMap" class="map-layer"></div>
+
+  <div class="topbar">
+    <div class="topbar-group">
+      <span id="availabilityPill" class="pill pill-off">Desconectado</span>
     </div>
+    <div class="topbar-group">
+      <span id="userGreeting" class="topbar-chip"></span>
+      <button class="topbar-btn" onclick="logout()">Salir</button>
+    </div>
+  </div>
 
-    <!-- Disponibilidad -->
-    <div class="card">
-      <div class="toggle-row">
-        <span class="label">Estado</span>
-        <span id="availabilityPill" class="pill pill-off">Desconectado</span>
+  <div class="sheet" id="sheet">
+    <div class="sheet-drag" id="sheetDrag"><div class="sheet-handle"></div></div>
+    <div class="sheet-content">
+      <!-- Disponibilidad -->
+      <div class="card">
+        <button id="toggleBtn" onclick="toggleAvailability()">Conectarme y recibir viajes</button>
+        <p class="hint" id="locationHint">Necesitamos tu ubicación para mostrarte viajes cercanos.</p>
       </div>
-      <button id="toggleBtn" onclick="toggleAvailability()">Conectarme y recibir viajes</button>
-      <p class="hint" id="locationHint">Necesitamos tu ubicación para mostrarte viajes cercanos.</p>
-    </div>
 
-    <!-- Mapa: solicitudes cercanas como pines, o ruta del viaje en curso -->
-    <div id="mapCard" class="card hidden">
-      <h2 id="mapCardTitle">Mapa</h2>
-      <div id="driverMap"></div>
-    </div>
+      <!-- Solicitudes cercanas -->
+      <div id="requestsView" class="card hidden">
+        <h2>Solicitudes cercanas</h2>
+        <div id="requestsList"></div>
+        <p id="requestsEmpty" class="empty hidden">Ninguna solicitud cercana por ahora. Te avisamos en cuanto llegue una.</p>
+      </div>
 
-    <!-- Solicitudes cercanas -->
-    <div id="requestsView" class="card hidden">
-      <h2>Solicitudes cercanas</h2>
-      <div id="requestsList"></div>
-      <p id="requestsEmpty" class="empty hidden">Ninguna solicitud cercana por ahora. Te avisamos en cuanto llegue una.</p>
-    </div>
+      <!-- Viaje activo -->
+      <div id="tripView" class="card hidden">
+        <h2>Viaje en curso <span id="tripBadge" class="status-badge"></span></h2>
+        <p id="tripInfo"></p>
+        <div id="tripActions"></div>
+      </div>
 
-    <!-- Viaje activo -->
-    <div id="tripView" class="card hidden">
-      <h2>Viaje en curso <span id="tripBadge" class="status-badge"></span></h2>
-      <p id="tripInfo"></p>
-      <div id="tripActions"></div>
+      <details class="log-details">
+        <summary>Registro de actividad</summary>
+        <div id="log"></div>
+      </details>
     </div>
-
-    <div id="log"></div>
   </div>
 </div>
 
@@ -173,6 +171,10 @@
   const REVERB_PORT = {{ config('broadcasting.connections.reverb.options.port', 443) }};
   const FORCE_TLS = '{{ config('broadcasting.connections.reverb.options.scheme', 'https') }}' === 'https';
   const LOCATION_REFRESH_MS = 15000; // cada cuánto reportamos ubicación mientras está disponible
+  const DEFAULT_CENTER = [20.9674, -89.5926]; // Mérida, Yucatán: centro de respaldo antes de tener GPS
+
+  // Snap points del bottom sheet (fracción de alto de pantalla, o píxeles si es > 1).
+  const SHEET_SNAPS = { collapsed: 170, half: 0.5, full: 0.88 };
 
   // ---------- Estado ----------
   let token = localStorage.getItem('mototaxi_driver_token') || null;
@@ -192,6 +194,9 @@
   let originMarker = null;
   let destMarker = null;
   let routeLine = null;
+
+  // ---------- Bottom sheet ----------
+  let sheet = null;
 
   // ---------- Helpers ----------
   async function api(path, options = {}) {
@@ -345,12 +350,6 @@
     }).addTo(map);
   }
 
-  function showMapCard(title) {
-    document.getElementById('mapCardTitle').textContent = title;
-    show('mapCard');
-    setTimeout(() => { if (map) map.invalidateSize(); }, 150);
-  }
-
   function updateOwnMarker(lat, lng, heading) {
     if (!map) return;
     if (!driverOwnMarker) {
@@ -431,7 +430,7 @@
       [currentTrip.destination.lat, currentTrip.destination.lng],
     ]);
     if (lastLat) bounds.extend([lastLat, lastLng]);
-    map.fitBounds(bounds, { padding: [30, 30] });
+    map.fitBounds(bounds, { padding: [30, 120] });
 
     updateTripRoute();
   }
@@ -480,7 +479,7 @@
     localStorage.removeItem('mototaxi_driver_user');
     token = null; user = null;
     hide('appView');
-    show('loginView');
+    show('authScreen');
   }
 
   function stopEverything() {
@@ -502,9 +501,9 @@
       document.getElementById('toggleBtn').textContent = 'Conectarme y recibir viajes';
       stopEverything();
       hide('requestsView');
-      hide('mapCard');
       if (map) clearRequestMarkers();
       lastHeading = null;
+      if (sheet) sheet.snapTo('collapsed');
       log('Te desconectaste. Ya no recibirás solicitudes nuevas.');
       return;
     }
@@ -525,9 +524,9 @@
       document.getElementById('locationHint').textContent = `Ubicación reportada: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 
       show('requestsView');
-      initDriverMap(lat, lng);
+      map.setView([lat, lng], 15);
       updateOwnMarker(lat, lng, resolvedHeading);
-      showMapCard('Solicitudes cercanas');
+      if (sheet) sheet.snapTo('half');
       await refreshZoneAndSubscribe(lat, lng);
       await loadNearbyRequests(lat, lng);
 
@@ -658,9 +657,9 @@
       openRequests = {};
       hide('requestsView');
       clearRequestMarkers();
-      showMapCard('Tu viaje');
       setupTripMap();
       renderTrip();
+      if (sheet) sheet.snapTo('collapsed'); // priorizamos ver el mapa/ruta; el conductor puede arrastrar para ver las acciones
     } catch (e) {
       alert('No se pudo aceptar: ' + e.message + '\n(probablemente otro conductor la tomó primero)');
       // refrescamos la lista por si esa solicitud ya no está disponible
@@ -691,7 +690,7 @@
         hide('tripView');
         show('requestsView');
         clearTripMapLayers();
-        showMapCard('Solicitudes cercanas');
+        if (sheet) sheet.snapTo('half');
         if (lastLat) loadNearbyRequests(lastLat, lastLng);
       }, 2000);
       return;
@@ -719,9 +718,16 @@
 
   // ---------- Arranque ----------
   function boot() {
-    hide('loginView');
+    hide('authScreen');
     show('appView');
     document.getElementById('userGreeting').textContent = `Hola, ${user?.name || ''}`;
+
+    initDriverMap(DEFAULT_CENTER[0], DEFAULT_CENTER[1]);
+    setTimeout(() => { if (map) map.invalidateSize(); }, 150);
+
+    if (!sheet) {
+      sheet = initBottomSheet(document.getElementById('sheet'), document.getElementById('sheetDrag'), SHEET_SNAPS, 'collapsed');
+    }
   }
 
   if (token && user) {

@@ -20,13 +20,12 @@
     --danger: #dc2626;
   }
   * { box-sizing: border-box; }
-  body {
+  html, body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--bg);
     color: var(--text);
     margin: 0;
-    padding: 0;
-    min-height: 100vh;
+    height: 100%;
   }
   .app { max-width: 480px; margin: 0 auto; padding: 24px 16px 60px; }
   header { text-align: center; margin-bottom: 24px; }
@@ -87,7 +86,9 @@
   .status-completed { background: #dcfce7; color: #166534; }
   .status-cancelled { background: #fee2e2; color: #991b1b; }
 
-  .driver-info { display: flex; align-items: center; gap: 12px; }
+  .status-line { font-weight: 600; font-size: 13px; margin: 0 0 10px; }
+
+  .driver-info { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
   .driver-avatar {
     width: 40px; height: 40px; border-radius: 50%; background: var(--primary);
     color: white; display: flex; align-items: center; justify-content: center;
@@ -110,23 +111,6 @@
   }
   .timeline .step.done:not(:last-child)::after { background: var(--success); }
 
-  .userbar { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 16px; }
-  .userbar button { width: auto; margin: 0; padding: 6px 12px; font-size: 12px; }
-
-  #mapWrapper { position: relative; }
-  #map { height: 320px; border-radius: 10px; z-index: 0; }
-
-  .floating-card {
-    position: absolute;
-    left: 10px; right: 10px; bottom: 10px;
-    background: white;
-    border-radius: 10px;
-    padding: 12px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
-    z-index: 500;
-  }
-  .floating-card .status-line { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
-
   .map-toggle { display: flex; gap: 8px; margin: 10px 0; }
   .map-mode {
     flex: 1; margin: 0; padding: 8px; font-size: 12px; font-weight: 600;
@@ -147,9 +131,11 @@
   .suggestions .item:hover { background: #f8fafc; }
   .suggestions .item.loading { color: var(--muted); }
 </style>
+@include('partials.bottom-sheet')
 </head>
 <body>
-<div class="app">
+
+<div id="authScreen" class="app">
   <header>
     <h1>Mototaxi</h1>
     <p>App del ciudadano</p>
@@ -164,65 +150,68 @@
     <button onclick="login()">Entrar</button>
     <div id="loginError" class="error hidden"></div>
   </div>
+</div>
 
-  <div id="appView" class="hidden">
-    <div class="userbar">
-      <span id="userGreeting"></span>
-      <button class="secondary" onclick="logout()">Cerrar sesion</button>
+<!-- ===================== APP (logueado): mapa full-screen + sheet ===================== -->
+<div id="appView" class="app-shell hidden">
+  <div id="map" class="map-layer"></div>
+
+  <div class="topbar">
+    <div class="topbar-group"></div>
+    <div class="topbar-group">
+      <span id="userGreeting" class="topbar-chip"></span>
+      <button class="topbar-btn" onclick="logout()">Salir</button>
     </div>
+  </div>
 
-    <div class="card">
-      <div id="mapWrapper">
-        <div id="map"></div>
-        <div id="floatingCard" class="floating-card hidden">
-          <p class="status-line" id="floatingStatusLine"></p>
-          <div id="floatingDriverBox" class="driver-info hidden">
-            <div class="driver-avatar" id="driverInitial">?</div>
-            <div>
-              <p class="name" id="driverName"></p>
-              <p class="plate" id="driverPlate"></p>
-            </div>
+  <div class="sheet" id="sheet">
+    <div class="sheet-drag" id="sheetDrag"><div class="sheet-handle"></div></div>
+    <div class="sheet-content">
+      <div id="createView" class="card">
+        <h2>A donde vas?</h2>
+
+        <label>Origen</label>
+        <div class="autocomplete-wrap">
+          <input id="originAddress" placeholder="Escribe una direccion o toca el mapa" autocomplete="off">
+          <div id="originSuggestions" class="suggestions hidden"></div>
+        </div>
+
+        <label>Destino</label>
+        <div class="autocomplete-wrap">
+          <input id="destAddress" placeholder="Escribe una direccion o toca el mapa" autocomplete="off">
+          <div id="destSuggestions" class="suggestions hidden"></div>
+        </div>
+
+        <div class="map-toggle">
+          <button type="button" class="map-mode active" id="modeOriginBtn" onclick="setMapMode('origin')">Tocar mapa: origen</button>
+          <button type="button" class="map-mode" id="modeDestBtn" onclick="setMapMode('destination')">Tocar mapa: destino</button>
+        </div>
+        <button class="secondary" onclick="useMyLocation()">Usar mi ubicacion actual como origen</button>
+
+        <button onclick="createTrip()" id="createBtn">Pedir mototaxi</button>
+        <div id="createError" class="error hidden"></div>
+      </div>
+
+      <div id="tripView" class="card hidden">
+        <h2>Tu viaje <span id="tripBadge" class="status-badge"></span></h2>
+        <p class="status-line" id="floatingStatusLine"></p>
+        <div id="floatingDriverBox" class="driver-info hidden">
+          <div class="driver-avatar" id="driverInitial">?</div>
+          <div>
+            <p class="name" id="driverName"></p>
+            <p class="plate" id="driverPlate"></p>
           </div>
         </div>
-      </div>
-    </div>
-
-    <div id="createView" class="card">
-      <h2>A donde vas?</h2>
-
-      <label>Origen</label>
-      <div class="autocomplete-wrap">
-        <input id="originAddress" placeholder="Escribe una direccion o toca el mapa" autocomplete="off">
-        <div id="originSuggestions" class="suggestions hidden"></div>
+        <div class="timeline" id="tripTimeline"></div>
+        <p class="hint" id="realtimeStatus">Conectando al canal en vivo...</p>
+        <button class="secondary" onclick="newTrip()">Pedir otro viaje</button>
       </div>
 
-      <label>Destino</label>
-      <div class="autocomplete-wrap">
-        <input id="destAddress" placeholder="Escribe una direccion o toca el mapa" autocomplete="off">
-        <div id="destSuggestions" class="suggestions hidden"></div>
-      </div>
-
-      <div class="map-toggle">
-        <button type="button" class="map-mode active" id="modeOriginBtn" onclick="setMapMode('origin')">Tocar mapa: origen</button>
-        <button type="button" class="map-mode" id="modeDestBtn" onclick="setMapMode('destination')">Tocar mapa: destino</button>
-      </div>
-      <button class="secondary" onclick="useMyLocation()">Usar mi ubicacion actual como origen</button>
-
-      <button onclick="createTrip()" id="createBtn">Pedir mototaxi</button>
-      <div id="createError" class="error hidden"></div>
-    </div>
-
-    <div id="tripView" class="card hidden">
-      <h2>Tu viaje <span id="tripBadge" class="status-badge"></span></h2>
-      <div class="timeline" id="tripTimeline"></div>
-      <p class="hint" id="realtimeStatus">Conectando al canal en vivo...</p>
-      <button class="secondary" onclick="newTrip()">Pedir otro viaje</button>
-    </div>
-
-    <!-- Panel de diagnóstico: útil en el celular, donde no hay consola F12 -->
-    <div class="card">
-      <h2>Diagnóstico</h2>
-      <div id="debugLog" style="font-family: monospace; font-size: 11px; color: #475569; background: #f1f5f9; padding: 8px; border-radius: 6px; max-height: 140px; overflow-y: auto; white-space: pre-wrap;"></div>
+      <!-- Panel de diagnóstico: útil en el celular, donde no hay consola F12 -->
+      <details class="log-details">
+        <summary>Diagnóstico</summary>
+        <div id="debugLog" style="font-family: monospace; font-size: 11px; color: #475569; background: #f1f5f9; padding: 8px; border-radius: 6px; max-height: 140px; overflow-y: auto; white-space: pre-wrap;"></div>
+      </details>
     </div>
   </div>
 </div>
@@ -235,12 +224,16 @@
   const REVERB_PORT = {{ config('broadcasting.connections.reverb.options.port', 443) }};
   const FORCE_TLS = '{{ config('broadcasting.connections.reverb.options.scheme', 'https') }}' === 'https';
 
+  // Snap points del bottom sheet (fracción de alto de pantalla, o píxeles si es > 1).
+  const SHEET_SNAPS = { collapsed: 200, half: 0.5, full: 0.88 };
+
   let token = localStorage.getItem('mototaxi_token') || null;
   let user = JSON.parse(localStorage.getItem('mototaxi_user') || 'null');
   let currentTripId = localStorage.getItem('mototaxi_trip_id') || null;
   let pusher = null;
   let tripChannel = null;
   let tripPollInterval = null;
+  let sheet = null;
 
   async function api(path, options = {}) {
     const res = await fetch(API_BASE + path, {
@@ -302,7 +295,7 @@
     if (pusher) pusher.disconnect();
     if (tripPollInterval) clearInterval(tripPollInterval);
     hide('appView');
-    show('loginView');
+    show('authScreen');
   }
 
   let map = null;
@@ -438,6 +431,12 @@
     const input = document.getElementById(inputId);
     const box = document.getElementById(suggestionsId);
     let debounceTimer = null;
+
+    // Al enfocar el campo, expandimos el sheet para que la lista de
+    // sugerencias tenga espacio (en vez de quedar apachurrada).
+    input.addEventListener('focus', function () {
+      if (sheet) sheet.snapTo('full');
+    });
 
     input.addEventListener('input', function () {
       clearTimeout(debounceTimer);
@@ -600,6 +599,7 @@
       hide('createView');
       stopNearbyPolling();
       showFloating('Buscando un conductor cercano...');
+      if (sheet) sheet.snapTo('collapsed'); // priorizamos ver el mapa mientras se busca conductor
       await loadTrip();
       connectRealtime();
     } catch (e) {
@@ -620,6 +620,7 @@
     hide('tripView');
     show('createView');
     hideFloating();
+    if (sheet) sheet.snapTo('half');
 
     if (originMarker) { map.removeLayer(originMarker); originMarker = null; }
     if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
@@ -634,7 +635,6 @@
   }
 
   function showFloating(statusLine, driver) {
-    show('floatingCard');
     document.getElementById('floatingStatusLine').textContent = statusLine;
 
     if (driver) {
@@ -648,7 +648,8 @@
   }
 
   function hideFloating() {
-    hide('floatingCard');
+    hide('floatingDriverBox');
+    document.getElementById('floatingStatusLine').textContent = '';
   }
 
   async function loadTrip() {
@@ -818,7 +819,7 @@
 
 
   function boot() {
-    hide('loginView');
+    hide('authScreen');
     show('appView');
     document.getElementById('userGreeting').textContent = 'Hola, ' + (user && user.name ? user.name : '');
 
@@ -826,12 +827,19 @@
     setupAutocomplete('originAddress', 'originSuggestions', 'origin');
     setupAutocomplete('destAddress', 'destSuggestions', 'destination');
 
+    if (!sheet) {
+      sheet = initBottomSheet(document.getElementById('sheet'), document.getElementById('sheetDrag'), SHEET_SNAPS, 'half');
+    }
+
     if (currentTripId) {
       hide('createView');
       stopNearbyPolling();
+      sheet.snapTo('collapsed');
+      setTimeout(function () { map.invalidateSize(); }, 100);
       loadTrip().then(connectRealtime);
     } else {
       show('createView');
+      sheet.snapTo('half');
       setTimeout(function () { map.invalidateSize(); }, 100);
     }
   }

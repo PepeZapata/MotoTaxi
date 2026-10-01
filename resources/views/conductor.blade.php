@@ -135,8 +135,8 @@
   <div class="sheet" id="sheet">
     <div class="sheet-drag" id="sheetDrag"><div class="sheet-handle"></div></div>
     <div class="sheet-content">
-      <!-- Disponibilidad -->
-      <div class="card">
+      <!-- Disponibilidad: oculta durante un viaje activo (no te puedes desconectar a medio viaje) -->
+      <div id="availabilityCard" class="card">
         <button id="toggleBtn" onclick="toggleAvailability()">Conectarme y recibir viajes</button>
         <p class="hint" id="locationHint">Necesitamos tu ubicación para mostrarte viajes cercanos.</p>
       </div>
@@ -174,7 +174,7 @@
   const DEFAULT_CENTER = [20.9674, -89.5926]; // Mérida, Yucatán: centro de respaldo antes de tener GPS
 
   // Snap points del bottom sheet (fracción de alto de pantalla, o píxeles si es > 1).
-  const SHEET_SNAPS = { collapsed: 170, half: 0.5, full: 0.88 };
+  const SHEET_SNAPS = { collapsed: 200, half: 0.5, full: 0.88 };
 
   // ---------- Estado ----------
   let token = localStorage.getItem('mototaxi_driver_token') || null;
@@ -398,18 +398,34 @@
     nearbyMarkers = {};
   }
 
-  async function drawTripRoute(from, to, color) {
+  let lastRoutedFrom = null; // último punto desde el que calculamos ruta real (para no pedirla de más)
+
+  async function drawTripRoute(from, to, color, force) {
+    // El servidor demo de OSRM es gratuito pero limitado: no tiene caso
+    // pedir una ruta nueva si el conductor casi no se movió desde la
+    // última vez que sí la calculamos.
+    if (!force && lastRoutedFrom && distanceMeters(lastRoutedFrom.lat, lastRoutedFrom.lng, from.lat, from.lng) < 25 && routeLine) {
+      return;
+    }
+
     try {
       const url = 'https://router.project-osrm.org/route/v1/driving/' + from.lng + ',' + from.lat + ';' + to.lng + ',' + to.lat + '?overview=full&geometry=geojson';
       const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
+      if (data.code !== 'Ok' || !data.routes || !data.routes[0]) throw new Error(data.message || data.code || 'sin ruta');
       const coords = data.routes[0].geometry.coordinates.map((c) => [c[1], c[0]]);
 
       if (routeLine) map.removeLayer(routeLine);
       routeLine = L.polyline(coords, { color: color, weight: 4, opacity: 0.7 }).addTo(map);
+      lastRoutedFrom = { lat: from.lat, lng: from.lng };
     } catch (e) {
+      // Sin conexión a OSRM (o sin ruta): mostramos una línea recta punteada
+      // como respaldo, para no dejar al conductor sin ninguna referencia.
+      log('No se pudo calcular la ruta por calles (' + e.message + '); mostrando línea directa.');
       if (routeLine) map.removeLayer(routeLine);
       routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: color, weight: 3, opacity: 0.5, dashArray: '6 6' }).addTo(map);
+      lastRoutedFrom = null; // para reintentar la próxima vez, sin esperar a que se mueva mucho
     }
   }
 
@@ -432,19 +448,24 @@
     if (lastLat) bounds.extend([lastLat, lastLng]);
     map.fitBounds(bounds, { padding: [30, 120] });
 
-    updateTripRoute();
+    lastRoutedFrom = null; // viaje nuevo: forzamos a calcular la ruta real desde cero
+    updateTripRoute(true);
   }
 
-  function updateTripRoute() {
+  // force=true recalcula sí o sí (ignora el throttle de "no se movió lo
+  // suficiente"); se usa al iniciar el viaje y al cambiar de estado, porque
+  // en esos casos cambia por completo el tramo que hay que trazar.
+  function updateTripRoute(force) {
     if (!map || !currentTrip || !currentTrip.origin) return;
     const driverPos = driverOwnMarker ? driverOwnMarker.getLatLng() : (lastLat ? { lat: lastLat, lng: lastLng } : null);
 
     if (['accepted', 'en_route_to_pickup'].includes(currentTrip.status) && driverPos) {
-      drawTripRoute(driverPos, currentTrip.origin, '#16a34a');
+      drawTripRoute(driverPos, currentTrip.origin, '#16a34a', force);
     } else if (currentTrip.status === 'arrived') {
       if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+      lastRoutedFrom = null;
     } else if (currentTrip.status === 'started') {
-      drawTripRoute(currentTrip.origin, currentTrip.destination, '#1d4ed8');
+      drawTripRoute(currentTrip.origin, currentTrip.destination, '#1d4ed8', force);
     }
   }
 
@@ -452,6 +473,7 @@
     if (originMarker) { map.removeLayer(originMarker); originMarker = null; }
     if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
     if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+    lastRoutedFrom = null;
   }
 
   // ---------- Login ----------
@@ -656,6 +678,7 @@
       };
       openRequests = {};
       hide('requestsView');
+      hide('availabilityCard');
       clearRequestMarkers();
       setupTripMap();
       renderTrip();
@@ -689,6 +712,7 @@
         currentTrip = null;
         hide('tripView');
         show('requestsView');
+        show('availabilityCard');
         clearTripMapLayers();
         if (sheet) sheet.snapTo('half');
         if (lastLat) loadNearbyRequests(lastLat, lastLng);
@@ -710,7 +734,8 @@
       });
       currentTrip.status = step.next;
       renderTrip();
-      updateTripRoute();
+      lastRoutedFrom = null; // cambió el estado: es un tramo distinto, recalculamos sí o sí
+      updateTripRoute(true);
     } catch (e) {
       alert('Error al actualizar el viaje: ' + e.message);
     }

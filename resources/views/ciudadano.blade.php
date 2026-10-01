@@ -411,7 +411,11 @@
 
   function maybeDrawPreviewRoute() {
     if (originCoords && destCoords) {
-      drawRoute(originCoords, destCoords, '#1d4ed8');
+      // force=true: origen y destino los puede cambiar el usuario en
+      // cualquier momento, así que siempre reflejamos el cambio (a
+      // diferencia del seguimiento del conductor, esto no ocurre en un
+      // temporizador, sino solo cuando el usuario realmente movió un pin).
+      drawRoute(originCoords, destCoords, '#1d4ed8', true);
     }
   }
 
@@ -540,18 +544,46 @@
     }
   }
 
-  async function drawRoute(from, to, color) {
+  // Distancia aproximada en metros entre dos coordenadas (fórmula haversine).
+  function distanceMeters(lat1, lng1, lat2, lng2) {
+    const R = 6371000;
+    const toRad = function (d) { return (d * Math.PI) / 180; };
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  let lastRoutedFrom = null; // último punto desde el que calculamos ruta real (para no pedirla de más)
+
+  async function drawRoute(from, to, color, force) {
+    // El servidor demo de OSRM es gratuito pero limitado: no tiene caso
+    // pedir una ruta nueva si el punto de partida casi no cambió desde la
+    // última vez que sí la calculamos (p. ej. mientras el conductor avanza
+    // poco a poco hacia el origen, refrescado cada pocos segundos).
+    if (!force && lastRoutedFrom && distanceMeters(lastRoutedFrom.lat, lastRoutedFrom.lng, from.lat, from.lng) < 25 && routeLine) {
+      return;
+    }
+
     try {
       const url = 'https://router.project-osrm.org/route/v1/driving/' + from.lng + ',' + from.lat + ';' + to.lng + ',' + to.lat + '?overview=full&geometry=geojson';
       const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
+      if (data.code !== 'Ok' || !data.routes || !data.routes[0]) throw new Error(data.message || data.code || 'sin ruta');
       const coords = data.routes[0].geometry.coordinates.map(function (c) { return [c[1], c[0]]; });
 
       if (routeLine) map.removeLayer(routeLine);
       routeLine = L.polyline(coords, { color: color, weight: 4, opacity: 0.7 }).addTo(map);
+      lastRoutedFrom = { lat: from.lat, lng: from.lng };
     } catch (e) {
+      // Sin conexión a OSRM (o sin ruta): mostramos una línea recta punteada
+      // como respaldo, para no dejar sin ninguna referencia visual.
+      debugLog('No se pudo calcular la ruta por calles (' + e.message + '); mostrando línea directa.');
       if (routeLine) map.removeLayer(routeLine);
       routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: color, weight: 3, opacity: 0.5, dashArray: '6 6' }).addTo(map);
+      lastRoutedFrom = null; // para reintentar la próxima vez, sin esperar a que se mueva mucho
     }
   }
 

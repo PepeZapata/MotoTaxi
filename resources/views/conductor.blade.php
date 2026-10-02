@@ -126,6 +126,7 @@
   <div class="topbar">
     <div class="topbar-group">
       <span id="availabilityPill" class="pill pill-off">Desconectado</span>
+      <button class="topbar-btn hidden" id="recenterBtn" onclick="recenterMap()">🎯 Centrar</button>
     </div>
     <div class="topbar-group">
       <span id="userGreeting" class="topbar-chip"></span>
@@ -174,6 +175,7 @@
   const FORCE_TLS = '{{ config('broadcasting.connections.reverb.options.scheme', 'https') }}' === 'https';
   const LOCATION_REFRESH_MS = 15000; // cada cuánto reportamos ubicación mientras está disponible
   const DEFAULT_CENTER = [20.9674, -89.5926]; // Mérida, Yucatán: centro de respaldo antes de tener GPS
+  const NAV_ZOOM = 17; // nivel de zoom "navegación" para seguir al conductor durante un viaje
 
   // Snap points del bottom sheet (fracción de alto de pantalla, o píxeles si es > 1).
   const SHEET_SNAPS = { collapsed: 200, half: 0.5, full: 0.88 };
@@ -188,6 +190,7 @@
   let locationInterval = null;
   let lastLat = null, lastLng = null;
   let lastHeading = null; // último rumbo conocido (0-359°), para rotar el ícono de la moto
+  let wakeLock = null; // Screen Wake Lock: evita que la pantalla se apague mientras está disponible/en viaje
 
   // ---------- Mapa ----------
   let map = null;
@@ -196,6 +199,7 @@
   let originMarker = null;
   let destMarker = null;
   let routeLine = null;
+  let followMode = true; // true = el mapa se recentra solo sobre la moto; se apaga si el conductor arrastra el mapa
 
   // ---------- Bottom sheet ----------
   let sheet = null;
@@ -341,6 +345,11 @@
       attribution: 'OpenStreetMap contributors',
       maxZoom: 19,
     }).addTo(map);
+
+    // Si el conductor arrastra el mapa con la mano, dejamos de recentrarlo
+    // automáticamente (para no "pelearnos" con lo que está viendo); vuelve a
+    // seguirlo solo cuando toca "Centrar" o empieza un nuevo tramo del viaje.
+    map.on('dragstart', () => { followMode = false; });
   }
 
   function updateOwnMarker(lat, lng, heading) {
@@ -476,6 +485,15 @@
     if (lastLat) bounds.extend([lastLat, lastLng]);
     map.fitBounds(bounds, { padding: [30, 120] });
 
+    // Tras ese vistazo general de 2 segundos, pasamos a modo "navegación":
+    // acercamos el mapa sobre la moto para que se alcancen a ver las calles
+    // y las vueltas, y lo mantenemos siguiéndola mientras avanza.
+    followMode = true;
+    show('recenterBtn');
+    setTimeout(() => {
+      if (followMode && lastLat && currentTrip) map.setView([lastLat, lastLng], NAV_ZOOM, { animate: true });
+    }, 2000);
+
     lastRouteCoords = null; // viaje nuevo: forzamos a calcular la ruta real desde cero
     updateTripRoute(true);
   }
@@ -508,6 +526,8 @@
     }
     lastRouteCoords = null;
     updateTripRouteInfo('');
+    followMode = true;
+    hide('recenterBtn');
   }
 
   // ---------- Login ----------
@@ -542,6 +562,43 @@
     if (locationInterval) clearInterval(locationInterval);
     if (pusher) { pusher.disconnect(); pusher = null; }
     subscribedChannels = [];
+    releaseWakeLock();
+  }
+
+  // ---------- Mantener la pantalla encendida mientras está disponible/en viaje ----------
+  // Importante: esto evita que la pantalla se apague SOLA por inactividad
+  // mientras la app sigue abierta y visible. No hace que la app siga
+  // corriendo si el conductor la manda a segundo plano o apaga la pantalla
+  // a propósito (los navegadores móviles pausan la pestaña en ese caso;
+  // eso ya no se puede resolver desde una página web, requeriría una app
+  // nativa con seguimiento de ubicación en segundo plano).
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } catch (e) {
+      log('No se pudo mantener la pantalla encendida: ' + e.message);
+    }
+  }
+
+  function releaseWakeLock() {
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  }
+
+  // Si el sistema soltó el wake lock al cambiar de pestaña/app, lo
+  // recuperamos en cuanto la pantalla vuelve a estar visible.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !wakeLock && document.getElementById('availabilityPill')?.textContent === 'Disponible') {
+      requestWakeLock();
+    }
+  });
+
+  // Vuelve a centrar el mapa sobre la moto y reactiva el seguimiento automático.
+  function recenterMap() {
+    followMode = true;
+    const pos = driverOwnMarker ? driverOwnMarker.getLatLng() : null;
+    if (map && pos) map.setView(pos, NAV_ZOOM, { animate: true });
   }
 
   // ---------- Disponibilidad ----------
@@ -585,6 +642,7 @@
       if (sheet) sheet.snapTo('half');
       await refreshZoneAndSubscribe(lat, lng);
       await loadNearbyRequests(lat, lng);
+      requestWakeLock();
 
       locationInterval = setInterval(async () => {
         try {
@@ -596,7 +654,10 @@
           await api('/driver/location', { method: 'POST', body: { latitude: pos.lat, longitude: pos.lng, ...(heading !== null ? { heading } : {}) } });
           await refreshZoneAndSubscribe(pos.lat, pos.lng);
           updateOwnMarker(pos.lat, pos.lng, heading);
-          if (currentTrip) updateTripRoute();
+          if (currentTrip) {
+            updateTripRoute();
+            if (followMode) map.setView([pos.lat, pos.lng], NAV_ZOOM, { animate: true });
+          }
         } catch (e) {
           log('No se pudo actualizar ubicación: ' + e.message);
         }

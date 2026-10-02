@@ -313,6 +313,12 @@
 
   const DEFAULT_CENTER = [20.9674, -89.5926];
 
+  // Área de servicio: limita las direcciones sugeridas (autocompletado) a
+  // esta caja geográfica, para que no aparezcan direcciones de otros
+  // estados. Si la app se despliega para otra ciudad (ej. Kanasín en vez
+  // de Mérida), solo hay que ajustar estos 4 valores.
+  const SERVICE_AREA_BBOX = { minLat: 20.75, maxLat: 21.10, minLng: -89.75, maxLng: -89.45 };
+
   function pinIcon(color) {
     return L.divIcon({
       html: '<div style="background:' + color + ';width:20px;height:20px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4)"></div>',
@@ -454,9 +460,15 @@
 
       debounceTimer = setTimeout(async function () {
         try {
-          const center = map.getCenter();
+          // bounded=1 + la caja fija del área de servicio: así solo salen
+          // direcciones dentro de la ciudad donde opera la app, y no de
+          // otros estados (antes, con bounded=0, el viewbox era solo una
+          // "preferencia" y Nominatim igual devolvía resultados de cualquier
+          // parte de México).
           const url = 'https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(q) +
-            '&limit=5&addressdetails=0&countrycodes=mx&viewbox=' + (center.lng - 0.3) + ',' + (center.lat + 0.3) + ',' + (center.lng + 0.3) + ',' + (center.lat - 0.3) + '&bounded=0';
+            '&limit=5&addressdetails=0&countrycodes=mx&viewbox=' +
+            SERVICE_AREA_BBOX.minLng + ',' + SERVICE_AREA_BBOX.maxLat + ',' + SERVICE_AREA_BBOX.maxLng + ',' + SERVICE_AREA_BBOX.minLat +
+            '&bounded=1';
           const res = await fetch(url);
           const results = await res.json();
 

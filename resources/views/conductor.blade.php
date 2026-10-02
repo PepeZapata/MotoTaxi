@@ -404,11 +404,17 @@
       if (deviation < ROUTE_RECALC_THRESHOLD_M) return;
     }
 
+    if (![from.lat, from.lng, to.lat, to.lng].every((v) => typeof v === 'number' && isFinite(v))) {
+      log('No se pudo calcular la ruta: coordenadas inválidas (' + JSON.stringify({ from, to }) + ').');
+      return;
+    }
+
     try {
-      const url = 'https://router.project-osrm.org/route/v1/driving/' + from.lng + ',' + from.lat + ';' + to.lng + ',' + to.lat + '?overview=full&geometry=geojson';
+      const url = 'https://router.project-osrm.org/route/v1/driving/' + from.lng + ',' + from.lat + ';' + to.lng + ',' + to.lat + '?overview=full&geometries=geojson';
       const res = await fetch(url);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error('HTTP ' + res.status + (data && data.message ? ': ' + data.message : (data && data.code ? ': ' + data.code : '')));
+      if (!data) throw new Error('respuesta no es JSON válido');
       if (data.code !== 'Ok' || !data.routes || !data.routes[0]) throw new Error(data.message || data.code || 'sin ruta');
       const route = data.routes[0];
       const coords = route.geometry.coordinates.map((c) => [c[1], c[0]]);

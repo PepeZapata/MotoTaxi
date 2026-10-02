@@ -153,6 +153,7 @@
       <div id="tripView" class="card hidden">
         <h2>Viaje en curso <span id="tripBadge" class="status-badge"></span></h2>
         <p id="tripInfo"></p>
+        <p class="hint" id="tripRouteInfo"></p>
         <div id="tripActions"></div>
       </div>
 
@@ -409,12 +410,14 @@
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       if (data.code !== 'Ok' || !data.routes || !data.routes[0]) throw new Error(data.message || data.code || 'sin ruta');
-      const coords = data.routes[0].geometry.coordinates.map((c) => [c[1], c[0]]);
+      const route = data.routes[0];
+      const coords = route.geometry.coordinates.map((c) => [c[1], c[0]]);
 
       if (routeLine) map.removeLayer(routeLine);
       routeLine = L.polyline(coords, { color: color, weight: 4, opacity: 0.7 }).addTo(map);
       lastRouteCoords = coords;
-      saveRouteCache(cacheKey, coords);
+      saveRouteCache(cacheKey, { coords: coords, distanceM: route.distance, durationS: route.duration });
+      updateTripRouteInfo(formatRouteSummary(route.distance, route.duration));
     } catch (e) {
       // Sin conexión a OSRM: si tenemos una ruta real guardada de este
       // mismo tramo (de una consulta anterior), la reutilizamos como
@@ -423,13 +426,21 @@
       log('No se pudo calcular la ruta por calles (' + e.message + '); ' + (cached ? 'mostrando la última ruta conocida.' : 'mostrando línea directa.'));
       if (routeLine) map.removeLayer(routeLine);
       if (cached) {
-        routeLine = L.polyline(cached, { color: color, weight: 4, opacity: 0.45 }).addTo(map);
-        lastRouteCoords = cached;
+        routeLine = L.polyline(cached.coords, { color: color, weight: 4, opacity: 0.45 }).addTo(map);
+        lastRouteCoords = cached.coords;
+        updateTripRouteInfo(formatRouteSummary(cached.distanceM, cached.durationS) + ' (ruta no actualizada)');
       } else {
         routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: color, weight: 3, opacity: 0.5, dashArray: '6 6' }).addTo(map);
         lastRouteCoords = null; // para reintentar la próxima vez, sin esperar a que se desvíe
+        updateTripRouteInfo('~' + formatRouteSummary(distanceMeters(from.lat, from.lng, to.lat, to.lng)) + ' en línea recta');
       }
     }
+  }
+
+  // Actualiza el texto "X km · Y min" debajo del estado del viaje.
+  function updateTripRouteInfo(text) {
+    const el = document.getElementById('tripRouteInfo');
+    if (el) el.textContent = text || '';
   }
 
   // Clave de caché para la ruta del tramo actual (cambia por viaje y por
@@ -475,6 +486,7 @@
     } else if (currentTrip.status === 'arrived') {
       if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
       lastRouteCoords = null;
+      updateTripRouteInfo('');
     } else if (currentTrip.status === 'started') {
       drawTripRoute(currentTrip.origin, currentTrip.destination, '#1d4ed8', force, currentLegCacheKey());
     }
@@ -489,6 +501,7 @@
       clearRouteCache('driver_' + currentTrip.id + '_destination');
     }
     lastRouteCoords = null;
+    updateTripRouteInfo('');
   }
 
   // ---------- Login ----------

@@ -44,6 +44,20 @@
     return min;
   }
 
+  // Texto corto tipo "3.2 km · 9 min" a partir de lo que ya regresa OSRM
+  // (distancia en metros, duración en segundos) - no hace falta pedir nada
+  // extra, estos datos vienen siempre en la respuesta de /route.
+  function formatRouteSummary(distanceM, durationS) {
+    const parts = [];
+    if (typeof distanceM === 'number' && !isNaN(distanceM)) {
+      parts.push(distanceM >= 1000 ? (distanceM / 1000).toFixed(1) + ' km' : Math.round(distanceM) + ' m');
+    }
+    if (typeof durationS === 'number' && !isNaN(durationS)) {
+      parts.push(Math.max(1, Math.round(durationS / 60)) + ' min');
+    }
+    return parts.join(' · ');
+  }
+
   // ---------- Caché local de la última ruta dibujada ----------
   // Si la app se queda sin señal o se recarga, podemos mostrar de inmediato
   // la última ruta real conocida en vez de una línea recta "a ciegas".

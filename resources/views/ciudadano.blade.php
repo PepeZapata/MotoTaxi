@@ -204,6 +204,7 @@
           </div>
         </div>
         <div class="timeline" id="tripTimeline"></div>
+        <p class="hint" id="tripRouteInfo"></p>
         <p class="hint" id="realtimeStatus">Conectando al canal en vivo...</p>
         <button class="secondary" onclick="newTrip()">Pedir otro viaje</button>
       </div>
@@ -567,12 +568,14 @@
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       if (data.code !== 'Ok' || !data.routes || !data.routes[0]) throw new Error(data.message || data.code || 'sin ruta');
-      const coords = data.routes[0].geometry.coordinates.map(function (c) { return [c[1], c[0]]; });
+      const route = data.routes[0];
+      const coords = route.geometry.coordinates.map(function (c) { return [c[1], c[0]]; });
 
       if (routeLine) map.removeLayer(routeLine);
       routeLine = L.polyline(coords, { color: color, weight: 4, opacity: 0.7 }).addTo(map);
       lastRouteCoords = coords;
-      saveRouteCache(cacheKey, coords);
+      saveRouteCache(cacheKey, { coords: coords, distanceM: route.distance, durationS: route.duration });
+      if (cacheKey) updateTripRouteInfo(formatRouteSummary(route.distance, route.duration));
     } catch (e) {
       // Sin conexión a OSRM: si tenemos una ruta real guardada de este mismo
       // tramo (de una consulta anterior), la reutilizamos en vez de una
@@ -581,13 +584,21 @@
       debugLog('No se pudo calcular la ruta por calles (' + e.message + '); ' + (cached ? 'mostrando la última ruta conocida.' : 'mostrando línea directa.'));
       if (routeLine) map.removeLayer(routeLine);
       if (cached) {
-        routeLine = L.polyline(cached, { color: color, weight: 4, opacity: 0.45 }).addTo(map);
-        lastRouteCoords = cached;
+        routeLine = L.polyline(cached.coords, { color: color, weight: 4, opacity: 0.45 }).addTo(map);
+        lastRouteCoords = cached.coords;
+        if (cacheKey) updateTripRouteInfo(formatRouteSummary(cached.distanceM, cached.durationS) + ' (ruta no actualizada)');
       } else {
         routeLine = L.polyline([[from.lat, from.lng], [to.lat, to.lng]], { color: color, weight: 3, opacity: 0.5, dashArray: '6 6' }).addTo(map);
         lastRouteCoords = null; // para reintentar la próxima vez, sin esperar a que se desvíe
+        if (cacheKey) updateTripRouteInfo('~' + formatRouteSummary(distanceMeters(from.lat, from.lng, to.lat, to.lng)) + ' en línea recta');
       }
     }
+  }
+
+  // Actualiza el texto "X km · Y min" dentro de la tarjeta del viaje.
+  function updateTripRouteInfo(text) {
+    const el = document.getElementById('tripRouteInfo');
+    if (el) el.textContent = text || '';
   }
 
   // Clave de caché para la ruta del tramo actual del viaje (cambia por
@@ -640,6 +651,7 @@
       currentTripId = trip.id;
       localStorage.setItem('mototaxi_trip_id', currentTripId);
       lastRouteCoords = null; // viaje nuevo: forzamos a calcular su ruta real desde cero
+      debugLog('Viaje creado: solicitud #' + currentTripId + '. Esperando a que un conductor la acepte...');
 
       hide('createView');
       stopNearbyPolling();
@@ -676,6 +688,7 @@
     if (driverMarker) { map.removeLayer(driverMarker); driverMarker = null; }
     if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
     lastRouteCoords = null;
+    updateTripRouteInfo('');
     originCoords = null; destCoords = null;
     document.getElementById('originAddress').value = '';
     document.getElementById('destAddress').value = '';
@@ -704,8 +717,17 @@
 
   async function loadTrip() {
     if (!currentTripId) return;
-    const trip = await api('/service-requests/' + currentTripId);
-    renderTrip(trip);
+    try {
+      const trip = await api('/service-requests/' + currentTripId);
+      const assignmentStatus = trip.assignment ? (trip.assignment.acceptance_status || trip.assignment.acceptanceStatus) : null;
+      debugLog('loadTrip #' + currentTripId + ': status=' + trip.status + ', asignación=' + (assignmentStatus || 'ninguna aún'));
+      renderTrip(trip);
+    } catch (e) {
+      // Si esto falla en silencio, la pantalla se queda pegada sin avisar
+      // por qué - lo volvemos visible aquí en vez de dejar un rechazo de
+      // promesa sin capturar.
+      debugLog('ERROR en loadTrip #' + currentTripId + ': ' + e.message);
+    }
   }
 
   const STATUS_MESSAGES = {
@@ -890,6 +912,7 @@
     }
 
     if (currentTripId) {
+      debugLog('Reanudando sesión con viaje activo: solicitud #' + currentTripId);
       hide('createView');
       stopNearbyPolling();
       sheet.snapTo('collapsed');

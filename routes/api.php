@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\DriverApprovalController;
+use App\Http\Controllers\Api\DriverDocumentController;
 use App\Http\Controllers\Api\DriverLocationController;
 use App\Http\Controllers\Api\GeoController;
 use App\Http\Controllers\Api\ServiceRequestController;
@@ -22,6 +23,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/geo/zone', [GeoController::class, 'zone']);
     Route::get('/drivers/nearby', [DriverLocationController::class, 'nearby']);
 
+    // Servir el archivo de un documento: lo puede ver tanto el conductor
+    // dueño como un admin, por eso vive fuera de los grupos role:driver /
+    // role:admin (el chequeo de "dueño o admin" se hace dentro del
+    // controller, ver DriverDocumentController::file).
+    Route::get('/documents/{driverDocument}/file', [DriverDocumentController::class, 'file']);
+
     // ---------- Conductor ----------
     // IMPORTANTE: /service-requests/open debe declararse ANTES que
     // /service-requests/{serviceRequest} (más abajo, grupo citizen),
@@ -34,6 +41,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/trip-assignments/{tripAssignment}/status', [TripAssignmentController::class, 'updateStatus']);
         Route::post('/driver/location', [DriverLocationController::class, 'update']);
         Route::post('/driver/availability', [DriverLocationController::class, 'updateAvailability']);
+        Route::get('/driver/documents', [DriverDocumentController::class, 'index']);
+        Route::post('/driver/documents', [DriverDocumentController::class, 'store']);
     });
 
     // ---------- Ciudadano ----------
@@ -48,5 +57,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/admin/drivers', [DriverApprovalController::class, 'all']);
         Route::get('/admin/drivers/pending', [DriverApprovalController::class, 'pending']);
         Route::post('/admin/drivers/{driverProfile}/decision', [DriverApprovalController::class, 'decide']);
+        Route::get('/admin/drivers/{driverProfile}/documents', [DriverDocumentController::class, 'adminIndex']);
+        Route::post('/admin/documents/{driverDocument}/decision', [DriverDocumentController::class, 'decide']);
     });
 });

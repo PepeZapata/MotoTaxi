@@ -17,6 +17,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Disco para documentos de conductores
+    |--------------------------------------------------------------------------
+    |
+    | Dónde se guardan las fotos/PDFs que suben los conductores (licencia,
+    | tarjeta de circulación, etc.). Por default usa el disco "local"
+    | (privado, fuera del document root — no expone documentos sensibles
+    | por URL pública). El día que se migre a un servidor de paga con
+    | almacenamiento propio (S3 o compatible), basta con poner
+    | DRIVER_DOCUMENTS_DISK=s3 (y llenar las variables AWS_* de abajo) en
+    | el .env de ese servidor: no hay que tocar ni una línea de código.
+    |
+    */
+
+    'driver_documents_disk' => env('DRIVER_DOCUMENTS_DISK', 'local'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Filesystem Disks
     |--------------------------------------------------------------------------
     |

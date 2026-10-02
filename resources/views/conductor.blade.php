@@ -95,6 +95,32 @@
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
 
   .leaflet-popup-content button { width: auto; margin-top: 6px; padding: 6px 10px; }
+
+  /* ---------- Documentos ---------- */
+  .tag-pending { background: #fef9c3; color: #854d0e; }
+  .tag-approved { background: #dcfce7; color: #166534; }
+  .tag-rejected { background: #fee2e2; color: #991b1b; }
+  .tag-expired { background: #ffedd5; color: #9a3412; }
+
+  .doc-item {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+  .doc-item .doc-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+  .doc-item .doc-head strong { font-size: 13px; }
+  .doc-item .doc-reason { color: var(--danger); font-size: 12px; margin: 6px 0 0; }
+  .doc-item .doc-expiry { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+  .doc-upload { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .doc-upload input[type="file"] { font-size: 12px; }
+  .doc-upload label { font-size: 11px; color: var(--muted); margin: 0; }
+  .doc-upload button { margin-top: 2px; }
 </style>
 @include('partials.bottom-sheet')
 @include('partials.route-helpers')
@@ -130,6 +156,7 @@
     </div>
     <div class="topbar-group">
       <span id="userGreeting" class="topbar-chip"></span>
+      <button class="topbar-btn" onclick="openDocuments()">📄 Documentos</button>
       <button class="topbar-btn" onclick="logout()">Salir</button>
     </div>
   </div>
@@ -156,6 +183,14 @@
         <p id="tripInfo"></p>
         <p class="hint" id="tripRouteInfo"></p>
         <div id="tripActions"></div>
+      </div>
+
+      <!-- Documentos: pantalla aparte, se abre con el botón "📄 Documentos" del topbar -->
+      <div id="documentsView" class="card hidden">
+        <h2>Mis documentos</h2>
+        <p class="hint">Sube una foto clara o un PDF de cada documento. El administrador revisa y aprueba cada uno; si rechaza alguno, aquí verás el motivo para volver a subirlo.</p>
+        <div id="documentsList"></div>
+        <button class="secondary" onclick="closeDocuments()">Volver</button>
       </div>
 
       <details class="log-details">
@@ -206,15 +241,20 @@
 
   // ---------- Helpers ----------
   async function api(path, options = {}) {
+    // Si el body ya es FormData (subida de archivos), no lo convertimos a
+    // JSON ni forzamos Content-Type: el navegador arma el multipart/form-data
+    // con el boundary correcto solo si no lo tocamos.
+    const isFormData = options.body instanceof FormData;
+
     const res = await fetch(API_BASE + path, {
       ...options,
       headers: {
-        'Content-Type': 'application/json',
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         Accept: 'application/json',
         ...(token ? { Authorization: 'Bearer ' + token } : {}),
         ...(options.headers || {}),
       },
-      body: options.body ? JSON.stringify(options.body) : undefined,
+      body: isFormData ? options.body : (options.body ? JSON.stringify(options.body) : undefined),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -599,6 +639,106 @@
     followMode = true;
     const pos = driverOwnMarker ? driverOwnMarker.getLatLng() : null;
     if (map && pos) map.setView(pos, NAV_ZOOM, { animate: true });
+  }
+
+  // ---------- Documentos ----------
+  const DOC_STATUS_LABELS = {
+    pending: 'Pendiente de revisión',
+    approved: 'Aprobado',
+    rejected: 'Rechazado',
+    expired: 'Vencido',
+  };
+
+  function openDocuments() {
+    hide('availabilityCard');
+    hide('requestsView');
+    hide('tripView');
+    show('documentsView');
+    if (sheet) sheet.snapTo('full');
+    loadDriverDocuments();
+  }
+
+  // Al volver, restauramos la tarjeta que corresponda según el estado
+  // actual (si hay un viaje en curso, o si está disponible esperando
+  // solicitudes) — el mismo criterio que usa el resto de la app.
+  function closeDocuments() {
+    hide('documentsView');
+    if (currentTrip) {
+      show('tripView');
+    } else {
+      show('availabilityCard');
+      if (document.getElementById('availabilityPill').textContent === 'Disponible') show('requestsView');
+    }
+    if (sheet) sheet.snapTo('half');
+  }
+
+  async function loadDriverDocuments() {
+    const list = document.getElementById('documentsList');
+    list.innerHTML = '<p class="hint">Cargando...</p>';
+    try {
+      const catalog = await api('/driver/documents');
+      renderDocuments(catalog);
+    } catch (e) {
+      list.innerHTML = '<p class="hint">No se pudo cargar: ' + e.message + '</p>';
+    }
+  }
+
+  function renderDocuments(catalog) {
+    const list = document.getElementById('documentsList');
+    list.innerHTML = catalog.map((item) => {
+      const doc = item.document;
+      const status = doc ? doc.display_status : null;
+      const tagHtml = status
+        ? '<span class="status-badge tag-' + status + '">' + (DOC_STATUS_LABELS[status] || status) + '</span>'
+        : '<span class="status-badge">Falta subir</span>';
+      const reasonHtml = (doc && doc.status === 'rejected' && doc.rejection_reason)
+        ? '<p class="doc-reason">Motivo del rechazo: ' + doc.rejection_reason + '</p>'
+        : '';
+      const expiryHtml = (doc && doc.expires_at)
+        ? '<p class="doc-expiry">Vence: ' + doc.expires_at + '</p>'
+        : '';
+      const fileInputId = 'docfile_' + item.type;
+      const expiryInputId = 'docexp_' + item.type;
+      const expiryFieldHtml = item.requires_expiry
+        ? '<label for="' + expiryInputId + '">Fecha de vencimiento</label><input type="date" id="' + expiryInputId + '">'
+        : '';
+
+      return '' +
+        '<div class="doc-item">' +
+          '<div class="doc-head"><strong>' + item.label + '</strong>' + tagHtml + '</div>' +
+          reasonHtml +
+          expiryHtml +
+          '<div class="doc-upload">' +
+            expiryFieldHtml +
+            '<input type="file" id="' + fileInputId + '" accept="image/*,application/pdf">' +
+            '<button onclick="uploadDocument(\'' + item.type + '\')">' + (doc ? 'Volver a subir' : 'Subir') + '</button>' +
+          '</div>' +
+        '</div>';
+    }).join('');
+  }
+
+  async function uploadDocument(type) {
+    const fileInput = document.getElementById('docfile_' + type);
+    const expInput = document.getElementById('docexp_' + type);
+    const file = fileInput.files[0];
+
+    if (!file) {
+      alert('Selecciona una foto o PDF primero.');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('type', type);
+    formData.append('file', file);
+    if (expInput && expInput.value) formData.append('expires_at', expInput.value);
+
+    try {
+      await api('/driver/documents', { method: 'POST', body: formData });
+      log('Documento subido, queda pendiente de revisión.');
+      loadDriverDocuments();
+    } catch (e) {
+      alert('No se pudo subir: ' + e.message);
+    }
   }
 
   // ---------- Disponibilidad ----------

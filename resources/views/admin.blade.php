@@ -68,6 +68,7 @@
   button.secondary { background: transparent; color: var(--primary); border: 1px solid var(--primary); }
 
   .error { color: var(--danger); font-size: 13px; margin-top: 8px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
   .hidden { display: none !important; }
 
   .userbar { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 16px; }
@@ -95,8 +96,24 @@
   .tag-pending { background: #fef9c3; color: #854d0e; }
   .tag-approved { background: #dcfce7; color: #166534; }
   .tag-rejected { background: #fee2e2; color: #991b1b; }
+  .tag-expired { background: #ffedd5; color: #9a3412; }
 
   .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 20px 0; }
+
+  /* ---------- Detalle de conductor / documentos ---------- */
+  .doc-item {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 8px;
+  }
+  .doc-item .doc-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .doc-item .doc-head strong { font-size: 13px; }
+  .doc-item .doc-meta { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+  .doc-item .doc-reason { color: var(--danger); font-size: 12px; margin: 4px 0 0; }
+  .doc-item .doc-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .doc-item .doc-actions button { padding: 6px 10px; font-size: 12px; }
+  .doc-item .doc-actions button.secondary { padding: 6px 10px; }
 </style>
 </head>
 <body>
@@ -131,7 +148,7 @@
     </div>
 
     <!-- Conductores -->
-    <div class="card">
+    <div class="card" id="driversCard">
       <h2>Conductores</h2>
       <div class="tabs">
         <span class="tab active" data-filter="pending" onclick="setFilter('pending')">Pendientes</span>
@@ -139,6 +156,14 @@
       </div>
       <div id="driversList"></div>
       <p id="driversEmpty" class="empty hidden">No hay conductores en esta lista.</p>
+    </div>
+
+    <!-- Detalle de un conductor: documentos -->
+    <div class="card hidden" id="driverDetailView">
+      <h2 id="driverDetailName">Documentos del conductor</h2>
+      <p class="hint" id="driverDetailAccountStatus"></p>
+      <div id="driverDocsList"></div>
+      <button class="secondary" onclick="closeDriverDetail()">Volver</button>
     </div>
   </div>
 </div>
@@ -164,7 +189,12 @@
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const msg = data.message || (data.errors ? Object.values(data.errors).flat().join(' ') : 'Error desconocido');
-      throw new Error(msg);
+      const err = new Error(msg);
+      // Ej. el 422 de "no se puede aprobar, faltan documentos" trae esta
+      // lista además del mensaje; la colgamos del Error para que el caller
+      // la pueda mostrar sin tener que volver a parsear la respuesta.
+      if (data.missing_documents) err.missingDocuments = data.missing_documents;
+      throw err;
     }
     return data;
   }
@@ -244,12 +274,13 @@
           <p>Licencia: ${d.license_number} · Tel: ${d.user.phone || '—'}</p>
           <p>Vehículo: ${d.vehicles[0] ? d.vehicles[0].plate + ' (' + d.vehicles[0].model + ')' : 'sin registrar'}</p>
         </div>
-        ${d.approval_status === 'pending' ? `
-          <div class="actions">
+        <div class="actions">
+          <button class="secondary" onclick="openDriverDetail(${d.id}, '${(d.user.name || '').replace(/'/g, "\\'")}')">Ver documentos</button>
+          ${d.approval_status === 'pending' ? `
             <button class="approve" onclick="decide(${d.id}, 'approved')">Aprobar</button>
             <button class="reject" onclick="decide(${d.id}, 'rejected')">Rechazar</button>
-          </div>
-        ` : ''}
+          ` : ''}
+        </div>
       </div>
     `).join('');
   }
@@ -259,6 +290,118 @@
       await api(`/admin/drivers/${driverProfileId}/decision`, { method: 'POST', body: { decision } });
       await loadDrivers();
       await loadStats();
+    } catch (e) {
+      // Si el backend bloqueó la aprobación por documentos faltantes,
+      // "e.message" ya trae el mensaje principal; agregamos la lista
+      // específica de qué falta si vino en la respuesta (ver api()).
+      alert('Error: ' + e.message + (e.missingDocuments && e.missingDocuments.length ? '\n\nFalta:\n- ' + e.missingDocuments.join('\n- ') : ''));
+    }
+  }
+
+  // ---------- Detalle de conductor: documentos ----------
+  const DOC_STATUS_LABELS = {
+    pending: 'Pendiente de revisión',
+    approved: 'Aprobado',
+    rejected: 'Rechazado',
+    expired: 'Vencido',
+  };
+  const DOC_TAG_CLASS = { pending: 'tag-pending', approved: 'tag-approved', rejected: 'tag-rejected', expired: 'tag-expired' };
+
+  let currentDriverDetailId = null;
+
+  function openDriverDetail(driverProfileId, name) {
+    currentDriverDetailId = driverProfileId;
+    document.getElementById('driverDetailName').textContent = 'Documentos de ' + name;
+    hide('driversCard');
+    show('driverDetailView');
+    loadDriverDocs();
+  }
+
+  function closeDriverDetail() {
+    currentDriverDetailId = null;
+    hide('driverDetailView');
+    show('driversCard');
+    loadDrivers();
+  }
+
+  async function loadDriverDocs() {
+    const list = document.getElementById('driverDocsList');
+    list.innerHTML = '<p class="hint">Cargando...</p>';
+    try {
+      const catalog = await api(`/admin/drivers/${currentDriverDetailId}/documents`);
+      renderDriverDocs(catalog);
+    } catch (e) {
+      list.innerHTML = '<p class="hint">No se pudo cargar: ' + e.message + '</p>';
+    }
+  }
+
+  function renderDriverDocs(catalog) {
+    const list = document.getElementById('driverDocsList');
+    const missing = catalog.filter((item) => !item.document || item.document.display_status !== 'approved').length;
+    document.getElementById('driverDetailAccountStatus').textContent = missing
+      ? `Faltan ${missing} documento(s) aprobados y vigentes para poder aprobar la cuenta completa.`
+      : 'Todos los documentos están aprobados y vigentes: ya se puede aprobar la cuenta.';
+
+    list.innerHTML = catalog.map((item) => {
+      const doc = item.document;
+      const status = doc ? doc.display_status : null;
+      const tagHtml = status
+        ? `<span class="status-tag ${DOC_TAG_CLASS[status] || ''}">${DOC_STATUS_LABELS[status] || status}</span>`
+        : '<span class="status-tag">No subido</span>';
+      const reasonHtml = (doc && doc.status === 'rejected' && doc.rejection_reason)
+        ? `<p class="doc-reason">Motivo del rechazo: ${doc.rejection_reason}</p>`
+        : '';
+      const metaHtml = doc
+        ? `<p class="doc-meta">${doc.expires_at ? 'Vence: ' + doc.expires_at + ' · ' : ''}Subido: ${new Date(doc.uploaded_at).toLocaleDateString()}</p>`
+        : '<p class="doc-meta">El conductor todavía no sube este documento.</p>';
+
+      const actionsHtml = doc ? `
+        <div class="doc-actions">
+          <button class="secondary" onclick="viewDocumentFile(${doc.id})">Ver archivo</button>
+          ${doc.status !== 'approved' ? `<button class="approve" onclick="decideDocument(${doc.id}, 'approved')">Aprobar</button>` : ''}
+          ${doc.status !== 'rejected' ? `<button class="reject" onclick="rejectDocumentPrompt(${doc.id})">Rechazar</button>` : ''}
+        </div>
+      ` : '';
+
+      return `
+        <div class="doc-item">
+          <div class="doc-head"><strong>${item.label}</strong>${tagHtml}</div>
+          ${metaHtml}
+          ${reasonHtml}
+          ${actionsHtml}
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function viewDocumentFile(driverDocumentId) {
+    try {
+      const res = await fetch(`${API_BASE}/documents/${driverDocumentId}/file`, {
+        headers: { Authorization: 'Bearer ' + token },
+      });
+      if (!res.ok) throw new Error('No se pudo abrir el archivo (HTTP ' + res.status + ').');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      // Liberamos la URL un poco después de abrirla, para no acumular
+      // memoria si el admin revisa muchos documentos seguidos.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      alert('Error: ' + e.message);
+    }
+  }
+
+  function rejectDocumentPrompt(driverDocumentId) {
+    const reason = prompt('Motivo del rechazo (el conductor lo va a ver):');
+    if (reason === null) return; // canceló
+    if (!reason.trim()) { alert('El motivo no puede quedar vacío.'); return; }
+    decideDocument(driverDocumentId, 'rejected', reason.trim());
+  }
+
+  async function decideDocument(driverDocumentId, decision, reason) {
+    try {
+      await api(`/admin/documents/${driverDocumentId}/decision`, { method: 'POST', body: { decision, reason } });
+      await loadDriverDocs();
     } catch (e) {
       alert('Error: ' + e.message);
     }

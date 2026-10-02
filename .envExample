@@ -35,6 +35,11 @@ SESSION_DOMAIN=null
 
 BROADCAST_CONNECTION=log
 FILESYSTEM_DISK=local
+# Disco donde se guardan los documentos subidos por los conductores
+# (licencia, tarjeta de circulación, etc.). "local" = disco privado del
+# servidor; cambiar a "s3" (y llenar las variables AWS_* de abajo) el día
+# que se migre a un servidor con almacenamiento en la nube.
+DRIVER_DOCUMENTS_DISK=local
 QUEUE_CONNECTION=database
 
 CACHE_STORE=database

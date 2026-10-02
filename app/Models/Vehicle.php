@@ -26,4 +26,9 @@ class Vehicle extends Model
     {
         return $this->belongsTo(DriverProfile::class);
     }
+
+    public function documents()
+    {
+        return $this->hasMany(DriverDocument::class);
+    }
 }

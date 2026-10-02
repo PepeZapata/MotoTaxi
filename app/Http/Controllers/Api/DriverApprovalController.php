@@ -35,10 +35,23 @@ class DriverApprovalController extends Controller
 
     /**
      * Admin aprueba o rechaza a un conductor.
+     *
+     * Para poder aprobar la cuenta completa, TODOS los documentos
+     * requeridos deben estar ya aprobados individualmente y vigentes (no
+     * vencidos) — así no se puede dar de alta a un conductor al que le
+     * falte, por ejemplo, el seguro. Rechazar la cuenta no tiene esta
+     * restricción (siempre se puede rechazar).
      */
     public function decide(DriverDecisionRequest $request, DriverProfile $driverProfile)
     {
         $data = $request->validated();
+
+        if ($data['decision'] === 'approved' && ! $driverProfile->hasAllDocumentsValid()) {
+            return response()->json([
+                'message' => 'No se puede aprobar: faltan documentos por subir, aprobar, o están vencidos.',
+                'missing_documents' => $driverProfile->missingOrInvalidDocumentLabels(),
+            ], 422);
+        }
 
         $driverProfile->update([
             'approval_status' => $data['decision'],
